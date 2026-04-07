@@ -1,0 +1,42 @@
+{
+  "name": "notulensi-kpu-gunungkidul",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit",
+    "seed-admin": "tsx src/scripts/seed-admin.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^1.33.0",
+    "@tailwindcss/vite": "^4.2.0",
+    "@tiptap/react": "^3.21.0",
+    "@tiptap/starter-kit": "^3.21.0",
+    "@types/react-router-dom": "^5.3.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "firebase": "^12.9.0",
+    "googleapis": "^171.4.0",
+    "html-to-image": "^1.11.11",
+    "html2pdf.js": "^0.14.0",
+    "jspdf": "^2.5.1",
+    "lucide-react": "^0.560.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.14.0",
+    "remark-gfm": "^4.0.0",
+    "tailwindcss": "^4.2.0",
+    "tiptap-markdown": "^0.9.0"
+  },
+  "devDependencies": {
+    "@netlify/functions": "^5.1.5",
+    "@types/node": "^22.14.0",
+    "firebase-admin": "^13.7.0",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}

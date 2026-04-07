@@ -1,0 +1,7 @@
+{
+  "name": "Notulensi KPU Gunungkidul",
+  "description": "Aplikasi notulensi rapat otomatis KPU Kabupaten Gunungkidul menggunakan Google Gemini AI. Merekam, mentranskrip, dan merangkum percakapan rapat secara cerdas.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
