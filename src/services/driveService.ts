@@ -13,10 +13,11 @@ export interface PhotoUploadData {
 
 export const saveMeetingToDrive = async (
   title: string, 
-  base64Pdf: string, 
+  base64File: string, 
   date: string,
   subBagian: string,
-  photos: PhotoUploadData[] = []
+  photos: PhotoUploadData[] = [],
+  fileType: 'pdf' | 'docx' = 'docx'
 ): Promise<SaveToDriveResponse> => {
   try {
     const response = await fetch('/.netlify/functions/save-to-drive', {
@@ -24,7 +25,7 @@ export const saveMeetingToDrive = async (
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ title, base64Pdf, date, subBagian, photos }),
+      body: JSON.stringify({ title, base64File, date, subBagian, photos, fileType }),
     });
 
     const data = await response.json();

@@ -20,6 +20,9 @@ export interface MeetingContext {
   date: string;
   subBagian: string;
   participants: string;
+  location?: string;
+  startTime?: string;
+  endTime?: string;
   referenceFile: File | null;
   styleGuide?: string;
   inputMode: InputMode;

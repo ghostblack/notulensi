@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Download, FileText, Maximize2, Minimize2, Loader2, ArrowLeft, Edit3, Save, X as CloseIcon, Cloud, ExternalLink, AlertCircle } from 'lucide-react';
+import { Copy, Check, FileText, Maximize2, Minimize2, Loader2, ArrowLeft, Edit3, Save, X as CloseIcon, Cloud, ExternalLink, AlertCircle } from 'lucide-react';
 import { saveMeetingToDrive } from '../services/driveService';
 import RichTextEditor from './RichTextEditor';
 
@@ -20,11 +20,13 @@ interface MinutesDisplayProps {
 const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationPhotos, photoUrls: initialPhotoUrls, onReset, onSave, meetingTitle, meetingDate, meetingSubBagian }) => {
   const [copied, setCopied] = useState(false);
   const [isFullWidth, setIsFullWidth] = useState(false);
-  const [isDownloadingPDF, setIsDownloadingPDF] = useState(false);
+
   const [isEditing, setIsEditing] = useState(false);
   const [editableContent, setEditableContent] = useState(content);
   const [isSaving, setIsSaving] = useState(false);
   const [photoUrls, setPhotoUrls] = useState<string[]>([]);
+  const [photoBase64s, setPhotoBase64s] = useState<string[]>([]);
+  const [logoBase64, setLogoBase64] = useState<string | null>(null);
   
   // Google Drive states
   const [isSavingToDrive, setIsSavingToDrive] = useState(false);
@@ -35,21 +37,103 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
     setEditableContent(content);
   }, [content]);
 
+  const compressImageToBase64DataUri = async (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const objectUrl = URL.createObjectURL(file);
+      img.src = objectUrl;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const targetAspectRatio = 4 / 3;
+        const imgAspectRatio = img.width / img.height;
+        
+        let sx = 0, sy = 0, sWidth = img.width, sHeight = img.height;
+        
+        // Crop center to exactly 4:3
+        if (imgAspectRatio > targetAspectRatio) {
+           sWidth = img.height * targetAspectRatio;
+           sx = (img.width - sWidth) / 2;
+        } else {
+           sHeight = img.width / targetAspectRatio;
+           sy = (img.height - sHeight) / 2;
+        }
+
+        const maxDim = 800; // max output width
+        let width = maxDim;
+        let height = maxDim / targetAspectRatio;
+
+        // Do not scale up small images
+        if (sWidth < maxDim) {
+           width = sWidth;
+           height = sHeight;
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { URL.revokeObjectURL(objectUrl); reject('Canvas context failed'); return; }
+        
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, sx, sy, sWidth, sHeight, 0, 0, width, height);
+        URL.revokeObjectURL(objectUrl);
+        resolve(canvas.toDataURL('image/jpeg', 0.8));
+      };
+      img.onerror = () => { URL.revokeObjectURL(objectUrl); reject('Load error'); };
+    });
+  };
+
   React.useEffect(() => {
     if (documentationPhotos && documentationPhotos.length > 0) {
       const urls = documentationPhotos.map(photo => URL.createObjectURL(photo));
       setPhotoUrls(urls);
+
+      // Also convert to base64 for export (blob URLs won't work server-side or in DOCX)
+      const convertToBase64 = async () => {
+        const base64List: string[] = [];
+        for (const photo of documentationPhotos) {
+          try {
+            const b64 = await compressImageToBase64DataUri(photo);
+            base64List.push(b64);
+          } catch {
+            base64List.push('');
+          }
+        }
+        setPhotoBase64s(base64List);
+      };
+      convertToBase64();
+
       return () => urls.forEach(url => URL.revokeObjectURL(url));
     } else if (initialPhotoUrls && initialPhotoUrls.length > 0) {
-      // Construct direct embed URLs from Drive IDs
+      // Construct direct embed URLs from Drive IDs for preview
       const urls = initialPhotoUrls.map(id => `https://drive.google.com/thumbnail?id=${id}&sz=w1000`);
       setPhotoUrls(urls);
+      // Can't convert Drive photos to base64 client-side due to CORS; leave photoBase64s empty
+      setPhotoBase64s([]);
     } else {
       setPhotoUrls([]);
+      setPhotoBase64s([]);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentationPhotos, initialPhotoUrls]);
 
   const KPU_LOGO_URL = "https://ik.imagekit.io/gambarid/file%20kpu/KPU_Logo.svg.png?updatedAt=1768041033309";
+
+  React.useEffect(() => {
+    // Pre-load logo as Base64 to avoid CORS issues during capture
+    const loadLogo = async () => {
+      try {
+        const response = await fetch(KPU_LOGO_URL);
+        const blob = await response.blob();
+        const reader = new FileReader();
+        reader.onloadend = () => setLogoBase64(reader.result as string);
+        reader.readAsDataURL(blob);
+      } catch (err) {
+        console.error("Failed to load logo as base64:", err);
+      }
+    };
+    loadLogo();
+  }, []);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(content);
@@ -57,10 +141,12 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // Returns base64 string (no data URI prefix) for Drive upload
   const compressImage = async (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const img = new Image();
-      img.src = URL.createObjectURL(file);
+      const objectUrl = URL.createObjectURL(file);
+      img.src = objectUrl;
       img.onload = () => {
         const canvas = document.createElement('canvas');
         const maxDim = 1200;
@@ -79,109 +165,208 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         if (!ctx) {
-          URL.revokeObjectURL(img.src);
+          URL.revokeObjectURL(objectUrl);
           reject('Canvas context failed');
           return;
         }
         
         ctx.drawImage(img, 0, 0, width, height);
         const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-        URL.revokeObjectURL(img.src);
+        URL.revokeObjectURL(objectUrl);
         resolve(dataUrl.split(',')[1]);
       };
       img.onerror = () => {
-        URL.revokeObjectURL(img.src);
+        URL.revokeObjectURL(objectUrl);
         reject('Load error');
       };
     });
   };
 
-  const handleDownloadPDF = async () => {
-    const element = document.getElementById('export-content');
-    if (!element) return;
+  // Helper: convert markdown to a clean HTML string for docx export
+  // exportPhotoBase64s: base64 data URIs to embed as photos in docx (for local files)
+  const markdownToHtml = async (markdown: string, exportPhotoBase64s: string[] = [], forPdf = false): Promise<string> => {
+    // Wait for logo to be loaded; if not ready, use external URL as fallback
+    const KPU_LOGO_DATA = logoBase64 || KPU_LOGO_URL;
+    
+    // Simple line-by-line markdown parser for docx
+    const lines = markdown.split('\n');
+    const htmlLines: string[] = [];
+    let inList = false;
+    let listType: 'ul' | 'ol' | null = null;
+    let listCounter = 0;
 
-    setIsDownloadingPDF(true);
-    try {
-      const { toJpeg } = await import('html-to-image');
-      const { jsPDF } = await import('jspdf');
+    const closeList = () => {
+      if (inList && listType) {
+        htmlLines.push(listType === 'ul' ? '</ul>' : '</ol>');
+        inList = false;
+        listType = null;
+        listCounter = 0;
+      }
+    };
 
-      // 1. Wait for images to load in the hidden renderer
-      await new Promise(r => setTimeout(r, 200));
+    const inlineFormat = (text: string): string => {
+      return text
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/`(.+?)`/g, '<code>$1</code>')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+    };
 
-      // 2. Capture the element as a JPEG (high quality)
-      const dataUrl = await toJpeg(element, {
-        quality: 0.95, 
-        pixelRatio: 2, 
-        backgroundColor: '#ffffff',
-        style: {
-          padding: '0',
-          margin: '0',
-          width: '800px', 
-        }
-      });
-
-      // 3. Create PDF (A4)
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = pdf.internal.pageSize.getHeight();
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
       
-      const img = new Image();
-      img.src = dataUrl;
-      await new Promise((resolve) => {
-        img.onload = resolve;
-      });
+      // Logo image
+      if (/^!\[Logo KPU\]/.test(line)) {
+        closeList();
+        let logoWidth = 65;
+        let logoHeight = 75; // fallback
+        try {
+          const dim = await new Promise<{w: number, h: number}>((res) => {
+            const img = new Image();
+            img.onload = () => res({w: img.width, h: img.height});
+            img.onerror = () => res({w: logoWidth, h: logoHeight});
+            img.src = KPU_LOGO_DATA;
+          });
+          if (dim.w > 0) {
+            logoHeight = Math.round((logoWidth * dim.h) / dim.w);
+          }
+        } catch(e) {}
 
-      const imgWidth = img.width;
-      const imgHeight = img.height;
-      const pxPerMm = imgWidth / pdfWidth;
-      const pxPageHeight = pdfHeight * pxPerMm;
-
-      const scaleFix = imgWidth / 800; // Match the capture width scale
-      const breakAvoidElements = Array.from(element.querySelectorAll('.photo-card, .kpu-logo-img, .placeholder-container, h1, h2, h3'));
-      const elementPositions = breakAvoidElements.map(el => {
-        const rect = el.getBoundingClientRect();
-        const parentRect = element.getBoundingClientRect();
-        return {
-          top: (rect.top - parentRect.top) * scaleFix,
-          bottom: (rect.bottom - parentRect.top) * scaleFix
-        };
-      });
-
-      let sY = 0;
-      while (sY < imgHeight) {
-        if (sY > 0) pdf.addPage();
-        
-        let currentPagePxHeight = pxPageHeight;
-        const pageBottom = sY + pxPageHeight;
-        const splittingElement = elementPositions.find(pos => 
-          pos.top < pageBottom && pos.bottom > pageBottom
-        );
-
-        if (splittingElement && sY < splittingElement.top) {
-          currentPagePxHeight = splittingElement.top - sY;
-        }
-
-        const sHeight = Math.min(imgHeight - sY, currentPagePxHeight);
-        const dHeight = sHeight / pxPerMm;
-
-        const pageCanvas = document.createElement('canvas');
-        pageCanvas.width = imgWidth;
-        pageCanvas.height = sHeight;
-        const ctx = pageCanvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, sY, imgWidth, sHeight, 0, 0, imgWidth, sHeight);
-          const pageDataUrl = pageCanvas.toDataURL('image/jpeg', 0.9);
-          pdf.addImage(pageDataUrl, 'JPEG', 0, 0, pdfWidth, dHeight);
-        }
-        sY += sHeight;
+        htmlLines.push(`<div style="text-align:center;margin-bottom:15pt;"><img src="${KPU_LOGO_DATA}" alt="Logo KPU" width="${logoWidth}" height="${logoHeight}" style="display:block;margin:0 auto;width:${logoWidth}px;height:${logoHeight}px;"/></div>`);
+        continue;
       }
 
-      const fileName = `${meetingTitle?.replace(/\s+/g, '_') || 'Notulen'}_${new Date().toISOString().split('T')[0]}.pdf`;
-      pdf.save(fileName);
+      // Generic image (skip blob: URLs in export — they don't survive DOCX conversion)
+      const imgMatch = line.match(/^!\[([^\]]*)\]\(([^)]+)\)/);
+      if (imgMatch) {
+        closeList();
+        const imgSrc = imgMatch[2];
+        let targetWidth = imgSrc.startsWith('data:') ? 450 : 400;
+        let targetHeight = 300; // fallback
+
+        try {
+          const dim = await new Promise<{w: number, h: number}>((res) => {
+            const img = new Image();
+            img.onload = () => res({w: img.width, h: img.height});
+            img.onerror = () => res({w: targetWidth, h: targetHeight});
+            img.src = imgSrc;
+          });
+          if (dim.w > 0) {
+            targetHeight = Math.round((targetWidth * dim.h) / dim.w);
+          }
+        } catch(e) {}
+        
+        if (imgSrc.startsWith('data:') || !imgSrc.startsWith('blob:')) {
+          htmlLines.push(`<div style="text-align:center;margin-bottom:10pt;"><img src="${imgSrc}" alt="${imgMatch[1]}" width="${targetWidth}" height="${targetHeight}" style="display:block;margin:0 auto;width:${targetWidth}px;height:${targetHeight}px;"/></div>`);
+        }
+        continue;
+      }
+
+      // Headings
+      if (/^# /.test(line)) { closeList(); htmlLines.push(`<h1 style="text-align:center;font-size:14pt;font-weight:bold;text-transform:uppercase;margin-top:0;margin-bottom:12pt;">${inlineFormat(line.replace(/^# /, ''))}</h1>`); continue; }
+      if (/^## /.test(line)) { closeList(); htmlLines.push(`<h2 style="text-align:center;font-size:12pt;font-weight:bold;text-transform:uppercase;margin-top:0;margin-bottom:10pt;">${inlineFormat(line.replace(/^## /, ''))}</h2>`); continue; }
+      if (/^### /.test(line)) { closeList(); htmlLines.push(`<h3 style="text-align:center;font-size:11pt;font-weight:bold;text-transform:uppercase;border-bottom:1pt solid black;padding-bottom:10pt;margin-top:0;margin-bottom:18pt;">${inlineFormat(line.replace(/^### /, ''))}</h3>`); continue; }
+
+      // Horizontal rule
+      if (/^---+$/.test(line.trim())) { closeList(); htmlLines.push('<hr/>'); continue; }
+
+      // Photo placeholder - embed using base64 data URIs
+      if (/\[DOKUMENTASI_FOTO_DI_SINI\]/i.test(line)) {
+        closeList();
+        const photos = exportPhotoBase64s.filter(b => b);
+        if (photos.length > 0) {
+          htmlLines.push('<div style="margin-top:20pt; page-break-inside: avoid;"><h3 style="text-align:center;font-size:12pt;font-weight:bold;">DOKUMENTASI FOTO</h3>');
+          htmlLines.push('<table style="width:100%; border-collapse: collapse; margin-top: 10pt; border: none;">');
+          const maxPhotos = Math.min(photos.length, 4);
+          for (let row = 0; row < Math.ceil(maxPhotos / 2); row++) {
+            htmlLines.push('<tr>');
+            for (let col = 0; col < 2; col++) {
+              const p = row * 2 + col;
+              if (p < maxPhotos) {
+                const imgSrc = photos[p];
+                // Images are pre-cropped nicely to 4:3! A4 50% max width is ~280px.
+                const tWidth = 280;
+                const tHeight = 210;
+                htmlLines.push(`
+                  <td style="width:50%; text-align:center; vertical-align:top; padding: 10pt; border: none;">
+                    <img src="${imgSrc}" alt="Foto ${p+1}" width="${tWidth}" height="${tHeight}" style="display:block;margin:0 auto;width:${tWidth}px;height:${tHeight}px;border-radius:8px;"/>
+                    <p style="text-align:center;font-size:9pt;margin-top:4pt;color:#1a1a1a;">Foto Dokumentasi ${p+1}</p>
+                  </td>
+                `);
+              } else {
+                htmlLines.push('<td style="width:50%; padding: 10pt; border: none;"></td>');
+              }
+            }
+            htmlLines.push('</tr>');
+          }
+          htmlLines.push('</table></div>');
+        } else if (photoUrls.length > 0) {
+          // Fallback: show note that photos are in Drive
+          htmlLines.push('<div style="margin-top:20pt;border:1pt solid #ccc;padding:10pt;text-align:center;"><p style="font-size:10pt;color:#666;">Dokumentasi foto tersedia di folder Google Drive yang sama dengan dokumen ini.</p></div>');
+        }
+        continue;
+      }
+
+      // Unordered list
+      const ulMatch = line.match(/^\s*[-*+] (.+)/);
+      if (ulMatch) {
+        if (!inList || listType !== 'ul') { closeList(); htmlLines.push('<ul style="margin-bottom:8pt; padding-left: 20pt;">'); inList = true; listType = 'ul'; }
+        htmlLines.push(`<li style="text-align:justify; line-height:1.5; margin-bottom:4pt;">${inlineFormat(ulMatch[1])}</li>`);
+        continue;
+      }
+
+      // Ordered list
+      const olMatch = line.match(/^\s*\d+\.\s+(.+)/);
+      if (olMatch) {
+        if (!inList || listType !== 'ol') { closeList(); htmlLines.push('<ol style="margin-bottom:8pt; padding-left: 20pt;">'); inList = true; listType = 'ol'; listCounter = 0; }
+        listCounter++;
+        htmlLines.push(`<li style="text-align:justify; line-height:1.5; margin-bottom:4pt;">${inlineFormat(olMatch[1])}</li>`);
+        continue;
+      }
+
+      // Empty line
+      if (line.trim() === '') {
+        closeList();
+        htmlLines.push('<p style="margin:0;line-height:0.5em;">&nbsp;</p>');
+        continue;
+      }
+
+      // Regular paragraph
+      closeList();
+      htmlLines.push(`<p style="text-align:justify;line-height:1.5;margin-bottom:8pt;font-size:11pt;">${inlineFormat(line)}</p>`);
+    }
+    closeList();
+
+    return `<!DOCTYPE html><html lang="id"><head><meta charset="utf-8"><style>
+      body { font-family: Arial, sans-serif; font-size: 11pt; margin: 0; padding: 0; box-sizing: border-box; }
+      h1,h2,h3 { color: #000; }
+      p { color: #1a1a1a; }
+      strong { font-weight: bold; }
+      ul, ol { padding-left: 1.5em; }
+      img { max-width: 100%; }
+    </style></head><body>${htmlLines.join('\n')}</body></html>`;
+  };
+
+  const handleDownloadWord = async () => {
+    if (!editableContent && !content) return;
+    const currentContent = editableContent || content;
+
+    try {
+      const { asBlob } = await import('html-docx-js-typescript');
+      const { saveAs } = await import('file-saver');
+
+      const title = meetingTitle?.replace(/\s+/g, '_') || 'Notulen';
+      // Pass the already-computed base64 photo data URIs so images embed correctly
+      const htmlContent = await markdownToHtml(currentContent, photoBase64s);
+
+      const blob = await asBlob(htmlContent, {
+        orientation: 'portrait',
+        margins: { top: 1440, right: 1440, bottom: 1440, left: 1440 }
+      }) as Blob;
+
+      saveAs(blob, `${title}_${new Date().toISOString().split('T')[0]}.docx`);
     } catch (error) {
-      console.error('PDF Download failed:', error);
-    } finally {
-      setIsDownloadingPDF(false);
+      console.error('Word Download failed:', error);
     }
   };
 
@@ -199,125 +384,54 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
   };
 
   const handleSaveToDrive = async () => {
-    const element = document.getElementById('export-content');
-    if (!element) return;
+    const currentContent = editableContent || content;
+    if (!currentContent) return;
 
     setIsSavingToDrive(true);
     setDriveError(null);
     setDriveLink(null);
 
     try {
-      const { toJpeg } = await import('html-to-image');
-      const { jsPDF } = await import('jspdf');
-
-      await new Promise(r => setTimeout(r, 200));
-
-      const dataUrl = await toJpeg(element, {
-        quality: 0.95, 
-        pixelRatio: 2, 
-        backgroundColor: '#ffffff',
-        style: {
-          padding: '0',
-          margin: '0',
-          width: '800px', 
-        }
-      });
-
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = pdf.internal.pageSize.getHeight();
+      const html2pdf = (await import('html2pdf.js')).default;
       
-      const img = new Image();
-      img.src = dataUrl;
-      await new Promise((resolve) => {
-        img.onload = resolve;
-      });
-
-      const imgWidth = img.width;
-      const imgHeight = img.height;
-      const pxPerMm = imgWidth / pdfWidth;
-      const pxPageHeight = pdfHeight * pxPerMm;
-
-      const scaleFix = imgWidth / 800;
-      const breakAvoidElements = Array.from(element.querySelectorAll('.photo-card, .kpu-logo-img, .placeholder-container, h1, h2, h3'));
-      const elementPositions = breakAvoidElements.map(el => {
-        const rect = el.getBoundingClientRect();
-        const parentRect = element.getBoundingClientRect();
-        return {
-          top: (rect.top - parentRect.top) * scaleFix,
-          bottom: (rect.bottom - parentRect.top) * scaleFix
-        };
-      });
-
-      let sY = 0;
-      while (sY < imgHeight) {
-        let currentPagePxHeight = pxPageHeight;
-        const pageBottom = sY + pxPageHeight;
-
-        const splittingElement = elementPositions.find(pos => 
-          pos.top < pageBottom && pos.bottom > pageBottom
-        );
-
-        if (splittingElement && sY < splittingElement.top) {
-          currentPagePxHeight = splittingElement.top - sY;
-        }
-
-        const sHeight = Math.min(imgHeight - sY, currentPagePxHeight);
-        const dHeight = sHeight / pxPerMm;
-
-        const pageCanvas = document.createElement('canvas');
-        pageCanvas.width = imgWidth;
-        pageCanvas.height = sHeight;
-        const ctx = pageCanvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, sY, imgWidth, sHeight, 0, 0, imgWidth, sHeight);
-          const pageData = pageCanvas.toDataURL('image/jpeg', 0.95);
-          pdf.addImage(pageData, 'JPEG', 0, 0, pdfWidth, dHeight, undefined, 'FAST');
-        }
-
-        sY += sHeight;
-        if (sY < imgHeight) {
-          pdf.addPage();
-        }
-      }
-
-      const base64Pdf = pdf.output('datauristring');
-      
-      const photoData = [];
-      if (documentationPhotos) {
-        for (const photo of documentationPhotos) {
-          try {
-            const base64 = await compressImage(photo);
-            photoData.push({
-              name: photo.name.replace(/\.[^/.]+$/, "") + ".jpg",
-              base64: base64
-            });
-          } catch (err) {
-            console.error("Gagal kompres foto:", photo.name, err);
-            const base64 = await new Promise<string>((res) => {
-              const reader = new FileReader();
-              reader.onloadend = () => res((reader.result as string).split(',')[1]);
-              reader.readAsDataURL(photo);
-            });
-            photoData.push({ name: photo.name, base64 });
-          }
-        }
-      }
-
       const title = meetingTitle || (content.match(/^#\s+(.+)$/m)?.[1]) || 'Rapat Tanpa Judul';
-      const result = await saveMeetingToDrive(title, base64Pdf, meetingDate || '', meetingSubBagian || 'KUL', photoData);
+      
+      // Build HTML with base64-embedded photos so server can render them nicely
+      const htmlContent = await markdownToHtml(currentContent, photoBase64s, true);
+
+      const opt: any = {
+        margin: [25.4, 25.4, 25.4, 25.4],
+        filename: `${title}.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, windowWidth: 602 },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      };
+
+      const pdfBlob = await html2pdf().set(opt).from(htmlContent).output('blob');
+
+      // Convert blob to base64 for upload
+      const base64File = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const result = reader.result as string;
+          resolve(result.split(',')[1]);
+        };
+        reader.readAsDataURL(pdfBlob);
+      });
+      
+      const result = await saveMeetingToDrive(title, base64File, meetingDate || '', meetingSubBagian || 'KUL', [], 'pdf');
       
       if (result.success && result.webViewLink) {
         setDriveLink(result.webViewLink);
         if (onSave && (result.photoIds || result.fileId)) {
-          await onSave(editableContent, result.photoIds, result.fileId, result.webViewLink);
+          await onSave(currentContent, result.photoIds, result.fileId, result.webViewLink);
         }
       } else {
         setDriveError(result.error || 'Gagal menyimpan ke Drive');
       }
     } catch (error: any) {
-      console.error('PDF Generation Error:', error);
-      setDriveError(error.message || 'Terjadi kesalahan saat memproses PDF');
+      console.error('Drive Save Error:', error);
+      setDriveError(error.message || 'Terjadi kesalahan saat memproses dokumen');
     } finally {
       setIsSavingToDrive(false);
     }
@@ -407,10 +521,10 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
              )}
              <div className="space-y-0.5">
                <p className={`text-sm font-black ${driveLink ? 'text-emerald-900' : 'text-red-900'} uppercase tracking-tight`}>
-                 {driveLink ? 'Tersimpan di Google Drive' : 'Gagal Menyimpan'}
+                 {driveLink ? 'Tersimpan di Google Docs' : 'Gagal Menyimpan'}
                </p>
                <p className={`text-[11px] font-medium ${driveLink ? 'text-emerald-600/80' : 'text-red-600/80'}`}>
-                 {driveLink ? 'Dokumen PDF dan foto Anda telah berhasil diunggah.' : driveError}
+                 {driveLink ? 'Notulensi Anda telah berhasil diunggah ke Google Drive sebagai dokumen PDF.' : driveError}
                </p>
              </div>
           </div>
@@ -427,16 +541,11 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
               </a>
             )}
             <button 
-              onClick={handleDownloadPDF}
-              disabled={isDownloadingPDF}
-              className="flex items-center gap-2 px-5 py-2.5 bg-slate-100 text-slate-700 text-[11px] font-black rounded-xl hover:bg-slate-200 transition-all uppercase tracking-wider shadow-sm disabled:opacity-50 active:scale-95"
+              onClick={handleDownloadWord}
+              className="flex items-center gap-2 px-5 py-2.5 bg-slate-100 text-slate-700 text-[11px] font-black rounded-xl hover:bg-slate-200 transition-all uppercase tracking-wider shadow-sm active:scale-95 border border-slate-200"
             >
-              {isDownloadingPDF ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <FileText className="w-4 h-4" />
-              )}
-              <span>{isDownloadingPDF ? 'Menyiapkan...' : 'Unduh PDF'}</span>
+              <FileText className="w-4 h-4 text-blue-600" />
+              <span>Unduh Word</span>
             </button>
             <button 
               onClick={() => { setDriveLink(null); setDriveError(null); }} 
@@ -529,7 +638,7 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
                               <img 
                                 className="kpu-logo-img block" 
                                 style={{ width: '48px', height: '60px', objectFit: 'contain' }}
-                                src={KPU_LOGO_URL} 
+                                src={logoBase64 || KPU_LOGO_URL} 
                                 alt="Logo KPU" 
                                 referrerPolicy="no-referrer"
                               />
@@ -552,71 +661,7 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
       
       <p className="text-center text-[9px] sm:text-[10px] text-slate-400 mt-8 mb-12 uppercase font-medium italic">Sistem Automasi Notulensi Berbasis Kecerdasan Buatan</p>
 
-      {/* 
-          OFFICIAL EXPORT RENDERER (HIDDEN)
-          This ensures that PDF and Word exports ALWAYS have the correct logo sizing 
-          and layout, even if the user is currently the RichTextEditor.
-      */}
-      <div 
-        id="export-content"
-        className="fixed pointer-events-none bg-white opacity-100"
-        style={{ width: '800px', left: '-1000px', top: 0, zIndex: -100 }}
-      >
-        <div className="bg-white p-[2.5cm] prose prose-base max-w-none text-black">
-          <ReactMarkdown 
-            remarkPlugins={[remarkGfm]}
-            components={{
-                h1: ({node, ...props}) => <h1 className="text-center font-black uppercase text-lg mb-4 leading-tight page-break-avoid" {...props} />,
-                h2: ({node, ...props}) => <h2 className="text-center font-bold uppercase text-base mb-2 leading-tight page-break-avoid" {...props} />,
-                h3: ({node, ...props}) => <h3 className="text-center font-bold uppercase text-sm mb-6 leading-tight border-b border-slate-900 pb-4 page-break-avoid" {...props} />,
-                p: ({node, children, ...props}) => {
-                  const childrenArray = React.Children.toArray(children);
-                  const placeholderRegex = /\[DOKUMENTASI_FOTO_DI_SINI\]/i;
-                  const isPlaceholder = childrenArray.some(
-                    child => typeof child === 'string' && placeholderRegex.test(child)
-                  );
-
-                  if (isPlaceholder) {
-                    const limitedPhotos = photoUrls.slice(0, 4);
-                    if (limitedPhotos.length === 0) return null;
-                    return (
-                      <div className="mt-8 pt-6 border-t border-slate-200 placeholder-container page-break-avoid" key="doc-gallery-export">
-                        <div className="grid grid-cols-2 gap-6">
-                          {limitedPhotos.map((url, idx) => (
-                            <div key={idx} className="flex flex-col gap-3 photo-card">
-                              <div className="aspect-[4/3] rounded-2xl overflow-hidden border border-slate-200 shadow-sm">
-                                <img src={url} alt={`Dokumentasi ${idx}`} className="w-full h-full object-cover" />
-                              </div>
-                              <p className="text-[10px] text-center text-slate-500 font-bold uppercase tracking-widest">Foto Dokumentasi {idx + 1}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  }
-                  return <p style={{ textAlign: 'justify', lineHeight: '1.6', marginBottom: '1rem', fontSize: '11pt' }} {...props}>{children}</p>;
-                },
-                img: ({node, ...props}) => {
-                  const isLogo = props.src === KPU_LOGO_URL || props.alt?.toLowerCase().includes('logo kpu');
-                  if (isLogo) {
-                    return (
-                      <div className="w-full flex justify-center mt-2 mb-4">
-                        <img 
-                          className="kpu-logo-img block" 
-                          style={{ width: '48px', height: '60px', objectFit: 'contain' }}
-                          src={KPU_LOGO_URL} 
-                        />
-                      </div>
-                    );
-                  }
-                  return <img {...props} className="max-w-full h-auto rounded-lg my-4 mx-auto block" />;
-                }
-            }}
-          >
-            {editableContent}
-          </ReactMarkdown>
-        </div>
-      </div>
+      {/* Hidden export div removed - export now uses markdownToHtml() directly */}
     </div>
   );
 };

@@ -9,12 +9,15 @@ export const handler: Handler = async (event) => {
   }
 
   try {
-    const { title, base64Pdf, date, subBagian } = JSON.parse(event.body || '{}');
+    const { title, base64File, base64Pdf, date, subBagian, fileType = 'docx' } = JSON.parse(event.body || '{}');
 
-    if (!title || !base64Pdf) {
+    // Support legacy base64Pdf for backward compatibility
+    const fileContent = base64File || base64Pdf;
+
+    if (!title || !fileContent) {
       return {
         statusCode: 400,
-        body: JSON.stringify({ error: 'Missing title or PDF data' }),
+        body: JSON.stringify({ error: 'Missing title or file data' }),
       };
     }
 
@@ -64,40 +67,36 @@ export const handler: Handler = async (event) => {
     const year = meetingDate.getFullYear().toString();
     const month = (meetingDate.getMonth() + 1).toString().padStart(2, '0');
     const day = meetingDate.getDate().toString().padStart(2, '0');
+    const dateFolderName = `${year}-${month}-${day}`;
 
     // 3. Navigate/Create Folder Structure
-    // Root -> Sub-bagian -> Year -> Month -> Day -> Meeting Title
+    // Root -> Sub-bagian -> YYYY-MM-DD
     let currentParentId = rootFolderId;
 
     // 3a. Sub-bagian (KUL, RENDATIN, etc.)
     const deptFolder = subBagian || 'KUL';
     currentParentId = await findOrCreateFolder(deptFolder, currentParentId);
 
-    // 3b. Year
-    currentParentId = await findOrCreateFolder(year, currentParentId);
-
-    // 3c. Month
-    currentParentId = await findOrCreateFolder(month, currentParentId);
-
-    // 3d. Day
-    currentParentId = await findOrCreateFolder(day, currentParentId);
-
-    // 3e. Final Meeting Folder (Title)
-    const finalFolderId = await findOrCreateFolder(title, currentParentId);
+    // 3b. Final Date Folder (YYYY-MM-DD)
+    const finalFolderId = await findOrCreateFolder(dateFolderName, currentParentId);
 
     // 4. Convert Base64 to Buffer
-    const pdfBuffer = Buffer.from(base64Pdf.split(',')[1] || base64Pdf, 'base64');
+    const buffer = Buffer.from(fileContent.split(',')[1] || fileContent, 'base64');
 
-    // 5. Create the PDF File in the final folder
+    // 5. Create the File (converted to Google Doc if it's docx)
+    const isDocx = fileType === 'docx';
+    
     const fileMetadata = {
-      name: `Notulensi - ${title}.pdf`,
-      mimeType: 'application/pdf',
+      name: isDocx ? `Notulensi - ${title}` : `Notulensi - ${title}.pdf`,
+      mimeType: isDocx ? 'application/vnd.google-apps.document' : 'application/pdf',
       parents: [finalFolderId],
     };
 
     const media = {
-      mimeType: 'application/pdf',
-      body: Readable.from(pdfBuffer),
+      mimeType: isDocx 
+        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' 
+        : 'application/pdf',
+      body: Readable.from(buffer),
     };
 
     const file = await drive.files.create({
@@ -106,40 +105,6 @@ export const handler: Handler = async (event) => {
       fields: 'id, webViewLink',
     });
 
-    // 6. Upload Photos if provided
-    const { photos = [] } = JSON.parse(event.body || '{}');
-    const photoLinks: string[] = [];
-
-    for (const photo of photos) {
-      const photoBuffer = Buffer.from(photo.base64.split(',')[1] || photo.base64, 'base64');
-      const photoMetadata = {
-        name: photo.name,
-        mimeType: 'image/jpeg',
-        parents: [finalFolderId],
-      };
-      const photoMedia = {
-        mimeType: 'image/jpeg',
-        body: Readable.from(photoBuffer),
-      };
-
-      const photoFile = await drive.files.create({
-        requestBody: photoMetadata,
-        media: photoMedia,
-        fields: 'id, webViewLink, thumbnailLink',
-      });
-
-      // 7. Make the photo publicly viewable (so it can be embedded in the app)
-      await drive.permissions.create({
-        fileId: photoFile.data.id!,
-        requestBody: {
-          role: 'reader',
-          type: 'anyone',
-        },
-      });
-
-      photoLinks.push(photoFile.data.id!);
-    }
-
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -147,7 +112,7 @@ export const handler: Handler = async (event) => {
         success: true,
         fileId: file.data.id,
         webViewLink: file.data.webViewLink,
-        photoIds: photoLinks,
+        photoIds: [],
       }),
     };
   } catch (error: any) {

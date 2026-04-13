@@ -9,11 +9,10 @@ import SetupMeeting from '@/components/SetupMeeting';
 import PhotoUpload from '@/components/PhotoUpload';
 import Login from '@/components/Login';
 import HistoryList from '@/components/HistoryList';
-import MinutesGallery from '@/components/MinutesGallery';
 import ConfirmationModal from '@/components/ConfirmationModal';
 import { AppStatus, MeetingHistoryItem, MeetingContext } from '@/types';
 import { transcribeAudioChunk, generateFinalMinutesFromText, transcribeFullAudio } from '@/services/geminiService';
-import { auth, logOut, subscribeToHistory, initializeMeeting, saveTranscriptChunk, finalizeMeeting, onAuthStateChanged, type User } from '@/services/firebase';
+import { auth, logOut, subscribeToHistory, initializeMeeting, saveTranscriptChunk, saveMeetingDraft, finalizeMeeting, onAuthStateChanged, type User } from '@/services/firebase';
 import { Loader2, Plus, AlertTriangle, Activity, FileCheck, Users, ArrowRight, CheckCircle2, MessageSquare, History as HistoryIcon, ClipboardList, Mic } from 'lucide-react';
 
 const SESSION_KEY = 'pending_meeting_session_kpu';
@@ -41,6 +40,16 @@ const App: React.FC = () => {
 
   const isRecordingInProgress = status === AppStatus.RECORDING || status === AppStatus.PROCESSING_CHUNK;
 
+  const isSessionActive = [
+    AppStatus.SETUP,
+    AppStatus.READY,
+    AppStatus.RECORDING,
+    AppStatus.PROCESSING_CHUNK,
+    AppStatus.PROCESSING_FINAL,
+    AppStatus.PROCESSING_EXTERNAL,
+    AppStatus.PHOTO_UPLOAD
+  ].includes(status);
+
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       if (isRecordingInProgress) {
@@ -63,7 +72,23 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (user) {
-      const unsubscribe = subscribeToHistory(user.uid, (data) => setHistory(data));
+      const unsubscribe = subscribeToHistory(user.uid, (data) => {
+        // Auto-complete live sessions older than 1 hour
+        const now = Date.now();
+        const oneHour = 60 * 60 * 1000;
+        
+        // Use a loop so we can trigger finalizeMeeting for abandoned ones
+        data.forEach(item => {
+          if (item.status === 'live') {
+            const age = now - (item.createdAt?.getTime() || 0);
+            if (age > oneHour) {
+              finalizeMeeting(item.id, item.content || '').catch(console.error);
+            }
+          }
+        });
+
+        setHistory(data);
+      });
       return () => unsubscribe();
     }
   }, [user]);
@@ -105,7 +130,16 @@ const App: React.FC = () => {
     if (data.inputMode === 'live') {
       if (user) {
         try {
-          const mId = await initializeMeeting(user.uid, data.title, data.participants, data.date, data.subBagian);
+          const mId = await initializeMeeting(
+            user.uid, 
+            data.title, 
+            data.participants, 
+            data.date, 
+            data.subBagian,
+            data.location,
+            data.startTime,
+            data.endTime
+          );
           setMeetingContext({ ...data, meetingId: mId });
           localStorage.setItem(SESSION_KEY, JSON.stringify({ meetingId: mId, title: data.title, subBagian: data.subBagian }));
         } catch (e) {}
@@ -137,10 +171,21 @@ const App: React.FC = () => {
       
       setMinutes(finalResult);
       if (user) {
-        const mId = await initializeMeeting(user.uid, data.title, data.participants, data.date, data.subBagian);
+        const mId = await initializeMeeting(
+          user.uid, 
+          data.title, 
+          data.participants, 
+          data.date, 
+          data.subBagian,
+          data.location,
+          data.startTime,
+          data.endTime
+        );
         setCurrentMeetingId(mId);
-        setMeetingContext({ ...data, meetingId: mId }); // Ensure context has the ID
-        // Do not finalize yet, wait for photos
+        setMeetingContext({ ...data, meetingId: mId }); 
+        
+        // Save as draft immediately
+        await saveMeetingDraft(mId, finalResult);
       }
       
       setFinalizationProgress(100);
@@ -181,12 +226,20 @@ const App: React.FC = () => {
     try {
       setFinalizationProgress(60);
       const full = accumulatedTranscripts.current.join("\n\n");
-      const res = await generateFinalMinutesFromText(full, meetingContext!);
+      
+      let finalContext = { ...meetingContext! };
+      // Auto-set end time if empty and it was a live session
+      if (!finalContext.endTime) {
+        finalContext.endTime = new Date().toLocaleTimeString('id-ID', { hour12: false, hour: '2-digit', minute: '2-digit' }).replace('.', ':');
+        setMeetingContext(finalContext);
+      }
+
+      const res = await generateFinalMinutesFromText(full, finalContext);
       setMinutes(res);
       if (meetingContext?.meetingId) {
         setCurrentMeetingId(meetingContext.meetingId);
+        await saveMeetingDraft(meetingContext.meetingId, res);
       }
-      localStorage.removeItem(SESSION_KEY);
       setFinalizationProgress(100);
       setStatus(AppStatus.PHOTO_UPLOAD); // Transition to photo upload
     } catch (e: any) {
@@ -315,7 +368,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex bg-white">
-      <Sidebar activeTab={activeTab} onTabChange={handleTabChange} />
+      {!isSessionActive && <Sidebar activeTab={activeTab} onTabChange={handleTabChange} />}
       
       <div className="flex-1 flex flex-col min-w-0 bg-[#F8F9FA]/50 h-screen overflow-hidden">
         <Header user={user} onLogout={logOut} />
@@ -323,7 +376,7 @@ const App: React.FC = () => {
         <main className={`flex-1 w-full px-4 sm:px-10 py-6 overflow-hidden flex flex-col`}>
           
           {status === AppStatus.IDLE && activeTab === 'dashboard' && (
-            <div className="h-full flex flex-col space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500 overflow-hidden">
+            <div className="h-full flex flex-col space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500 overflow-y-auto overflow-x-hidden custom-scrollbar pr-1 pb-10 md:pb-0">
               {/* Dashboard Greeting */}
               <div className="space-y-1 shrink-0">
                 <p className="text-sm font-medium text-slate-500">
@@ -362,7 +415,7 @@ const App: React.FC = () => {
                 </div>
 
                 {/* Stats Card 1 */}
-                <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-none flex flex-col justify-between">
+                <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-none flex flex-col justify-between shrink-0">
                   <div className="space-y-3">
                     <div className="p-2 bg-slate-50 w-fit rounded-xl border border-slate-100">
                        <FileCheck className="w-5 h-5 text-slate-400" />
@@ -378,7 +431,7 @@ const App: React.FC = () => {
                 </div>
 
                 {/* Stats Card 2 */}
-                <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-none flex flex-col justify-between">
+                <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-none flex flex-col justify-between shrink-0">
                   <div className="space-y-3">
                     <div className="p-2 bg-slate-50 w-fit rounded-xl border border-slate-100">
                        <Activity className="w-5 h-5 text-slate-400" />
@@ -394,10 +447,9 @@ const App: React.FC = () => {
                 </div>
               </div>
 
-              {/* Bottom Row Lists - Dynamic Ratios (7/5) */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1 min-h-0">
-                {/* Rapat Terakhir - lg:col-span-7 */}
-                <div className="lg:col-span-7 bg-white rounded-3xl border border-slate-200 shadow-none flex flex-col overflow-hidden">
+              {/* Bottom Row: Notulensi Terakhir - lg:col-span-12 (Full Width) */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1 min-h-[500px] md:min-h-0 shrink-0 md:shrink">
+                <div className="lg:col-span-12 bg-white rounded-3xl border border-slate-200 shadow-none flex flex-col overflow-hidden">
                   <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between shrink-0">
                     <div className="flex items-center gap-3">
                       <div className="p-1.5 bg-slate-50 rounded-lg border border-slate-100">
@@ -411,54 +463,36 @@ const App: React.FC = () => {
                   </div>
                   <div className="p-2 overflow-y-auto flex-1 custom-scrollbar">
                     <HistoryList 
-                      history={history.slice(0, 3)} 
+                      history={history.slice(0, 5)} 
                       hideHeader={true}
                       onSelect={(item) => { 
                         setMinutes(item.content); 
                         setCurrentMeetingId(item.id);
-                        setMeetingContext({
+                        const context: MeetingContext = {
                           title: item.title,
                           date: item.date,
                           subBagian: item.subBagian || 'KUL',
                           participants: item.participants || "",
+                          location: (item as any).location || "",
+                          startTime: (item as any).startTime || "",
+                          endTime: (item as any).endTime || "",
                           inputMode: 'live',
                           referenceFile: null,
-                          photoUrls: item.photoUrls
-                        });
-                        setStatus(AppStatus.COMPLETED); 
+                          photoUrls: item.photoUrls,
+                          meetingId: item.id
+                        };
+                        setMeetingContext(context);
+                        
+                        // Detect if it's a draft (live but has content)
+                        if (item.status === 'live' && item.content) {
+                          setStatus(AppStatus.PHOTO_UPLOAD);
+                        } else {
+                          setStatus(AppStatus.COMPLETED); 
+                        }
                         setShowHistory(false); 
                       }} 
                       onRegenerate={handleRegenerate}
                     />
-                  </div>
-                </div>
-
-                {/* Panduan - lg:col-span-5 */}
-                <div className="lg:col-span-5 bg-white rounded-3xl border border-slate-200 shadow-none flex flex-col overflow-hidden">
-                  <div className="px-6 py-4 border-b border-slate-100 shrink-0">
-                    <div className="flex items-center gap-3">
-                      <div className="p-1.5 bg-slate-50 rounded-lg border border-slate-100">
-                        <ClipboardList className="w-4 h-4 text-slate-400" />
-                      </div>
-                      <h3 className="font-bold text-slate-900 text-xs">Catatan Penting</h3>
-                    </div>
-                  </div>
-                  <div className="p-6 space-y-4 overflow-y-auto flex-1 custom-scrollbar">
-                    {[
-                      { title: "Peserta Rapat", desc: "Berikan detail nama dan jabatan narasumber.", icon: Users },
-                      { title: "Lokasi & Media", desc: "Pastikan microphone tidak terlalu jauh.", icon: Mic },
-                      { title: "Verifikasi", desc: "Cek kembali draft notulensi sebelum disimpan.", icon: CheckCircle2 }
-                    ].map((note, i) => (
-                      <div key={i} className="flex gap-4">
-                        <div className="shrink-0 w-8 h-8 rounded-xl bg-slate-50 flex items-center justify-center border border-slate-100">
-                          <note.icon className="w-4 h-4 text-slate-400" />
-                        </div>
-                        <div className="space-y-0.5">
-                          <h4 className="font-bold text-slate-900 text-[12px]">{note.title}</h4>
-                          <p className="text-[11px] text-slate-500 leading-tight font-medium">{note.desc}</p>
-                        </div>
-                      </div>
-                    ))}
                   </div>
                 </div>
               </div>
@@ -477,8 +511,8 @@ const App: React.FC = () => {
                </div>
                
                <div className="flex-1 overflow-hidden flex flex-col">
-                  <MinutesGallery 
-                    items={history} 
+                  <HistoryList 
+                    history={history} 
                     onSelect={(item) => { 
                       setMinutes(item.content); 
                       setCurrentMeetingId(item.id);
@@ -487,20 +521,23 @@ const App: React.FC = () => {
                         date: item.date,
                         subBagian: item.subBagian || 'KUL',
                         participants: item.participants || "",
+                        location: (item as any).location || "",
+                        startTime: (item as any).startTime || "",
+                        endTime: (item as any).endTime || "",
                         inputMode: 'live',
                         referenceFile: null,
-                        photoUrls: item.photoUrls
+                        photoUrls: item.photoUrls,
+                        meetingId: item.id
                       });
-                      setStatus(AppStatus.COMPLETED); 
+                      
+                      if (item.status === 'live' && item.content) {
+                        setStatus(AppStatus.PHOTO_UPLOAD);
+                      } else {
+                        setStatus(AppStatus.COMPLETED); 
+                      }
                       setShowHistory(false); 
                     }} 
-                    onDelete={(id, title) => {
-                      // We can reuse deleteMeeting here
-                      if (window.confirm(`Hapus notulen "${title}"?`)) {
-                        finalizeMeeting(id, "").catch(() => {}); // This is just to trigger a re-render or similar if needed, 
-                        // better to use the deleteMeeting service
-                      }
-                    }}
+                    onRegenerate={handleRegenerate}
                   />
                </div>
             </div>
@@ -566,7 +603,7 @@ const App: React.FC = () => {
         </main>
       </div>
 
-      <BottomNav activeTab={activeTab} onTabChange={handleTabChange} />
+      {!isSessionActive && <BottomNav activeTab={activeTab} onTabChange={handleTabChange} />}
 
       <ConfirmationModal 
         isOpen={isConfirmModalOpen}

@@ -182,7 +182,7 @@ export const getMeeting = async (meetingId: string) => {
 };
 
 
-export const initializeMeeting = async (userId: string, title: string, participants: string, date: string, subBagian: string) => {
+export const initializeMeeting = async (userId: string, title: string, participants: string, date: string, subBagian: string, location?: string, startTime?: string, endTime?: string) => {
   try {
     // Get user displayName from Firestore
     let userDisplayName = '';
@@ -198,6 +198,9 @@ export const initializeMeeting = async (userId: string, title: string, participa
       participants,
       date,
       subBagian,
+      location: location || '',
+      startTime: startTime || '',
+      endTime: endTime || '',
       status: 'live',
       transcriptSegments: [], 
       content: '', 
@@ -219,6 +222,20 @@ export const saveTranscriptChunk = async (meetingId: string, transcriptChunk: st
     });
   } catch (error) {
     console.error("Error saving transcript chunk:", error);
+  }
+};
+
+/** Simpan draft notulensi (sebelum finalisasi foto) */
+export const saveMeetingDraft = async (meetingId: string, content: string) => {
+  try {
+    const meetingRef = doc(db, "meetings", meetingId);
+    await updateDoc(meetingRef, {
+      content,
+      lastUpdated: serverTimestamp()
+    });
+  } catch (error) {
+    console.error("Error saving meeting draft:", error);
+    throw error;
   }
 };
 

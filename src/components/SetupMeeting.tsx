@@ -1,8 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Calendar, Type, Upload, FileText, ArrowRight, X, CheckCircle2, AlertCircle, Loader2, Mic, Music, Sparkles, Users, Component, Tag, Plus, Search } from 'lucide-react';
+import { Calendar, Type, Upload, FileText, ArrowRight, X, AlertCircle, Mic, Music, Users, Component, Tag, Plus, Search, MapPin, Clock } from 'lucide-react';
 import { MeetingContext, InputMode } from '@/types';
-import { analyzeDocumentStyle } from '@/services/geminiService';
 import { subscribeToSubBagians, subscribeToCategories, subscribeToParticipants } from '@/services/firebase';
 
 interface SetupMeetingProps {
@@ -26,6 +25,9 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [subBagian, setSubBagian] = useState<string>('');
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('');
+  const [location, setLocation] = useState('');
+  const [startTime, setStartTime] = useState(new Date().toLocaleTimeString('id-ID', { hour12: false, hour: '2-digit', minute: '2-digit' }).replace('.', ':'));
+  const [endTime, setEndTime] = useState('');
 
   // Participants as array of "Nama - Jabatan" strings
   const [participantList, setParticipantList] = useState<string[]>([]);
@@ -34,12 +36,6 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
   const [participantSearch, setParticipantSearch] = useState('');
   
   const [audioFile, setAudioFile] = useState<File | null>(null);
-  const [documentationPhotos, setDocumentationPhotos] = useState<File[]>([]);
-  
-  const [refFile, setRefFile] = useState<File | null>(null);
-  const [isAnalyzingRef, setIsAnalyzingRef] = useState(false);
-  const [styleStatus, setStyleStatus] = useState<'none' | 'analyzing' | 'success' | 'error'>('none');
-  const [styleGuide, setStyleGuide] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   
   // Firestore data
@@ -48,9 +44,7 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
   const [globalParticipants, setGlobalParticipants] = useState<any[]>([]);
   const [loadingSB, setLoadingSB] = useState(true);
 
-  const refFileInputRef = useRef<HTMLInputElement>(null);
   const audioFileInputRef = useRef<HTMLInputElement>(null);
-  const photoInputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Load Firestore data
@@ -116,44 +110,8 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
     return !inList && matchSearch;
   });
 
-  const handleRefFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setRefFile(e.target.files[0]);
-      setStyleStatus('none');
-      setStyleGuide(null);
-    }
-  };
-
   const handleAudioFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) setAudioFile(e.target.files[0]);
-  };
-
-  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      const filesArray = Array.from(e.target.files);
-      setDocumentationPhotos(prev => [...prev, ...filesArray]);
-    }
-  };
-
-  const removePhoto = (index: number) => {
-    setDocumentationPhotos(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const handleAnalyzeStyle = async () => {
-    if (!refFile) return;
-    setIsAnalyzingRef(true);
-    setStyleStatus('analyzing');
-    setError(null);
-    try {
-      const res = await analyzeDocumentStyle(refFile);
-      setStyleGuide(res);
-      setStyleStatus('success');
-    } catch {
-      setError("Gagal menganalisis gaya dokumen.");
-      setStyleStatus('error');
-    } finally {
-      setIsAnalyzingRef(false);
-    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -172,11 +130,12 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
       date,
       subBagian,
       participants: participantList.join('\n'),
+      location,
+      startTime,
+      endTime,
       inputMode,
-      referenceFile: refFile,
-      styleGuide: styleGuide || undefined,
       audioFile: inputMode === 'upload' ? audioFile : null,
-      documentationPhotos: documentationPhotos.length > 0 ? documentationPhotos : undefined
+      referenceFile: null,
     });
   };
 
@@ -187,10 +146,10 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
   };
 
   return (
-    <div className="w-full max-w-5xl mx-auto animate-in fade-in slide-in-from-bottom-6 duration-700 h-full overflow-y-auto custom-scrollbar pr-2">
+    <div className="w-full max-w-6xl mx-auto animate-in fade-in slide-in-from-bottom-6 duration-700 h-full overflow-y-auto custom-scrollbar pr-2">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6 px-2">
-        <div className="space-y-1">
+      <div className="flex items-center justify-between mb-8 px-1">
+        <div className="space-y-1.5">
           <h2 className="text-xl sm:text-2xl font-extrabold text-[#111827] tracking-tight">Konfigurasi Rapat</h2>
           <p className="text-xs sm:text-sm text-slate-500 font-medium">Lengkapi detail untuk memulai sesi notulensi otomatis.</p>
         </div>
@@ -203,66 +162,109 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
       </div>
 
       <form onSubmit={handleSubmit} className="relative">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           
-          {/* Main Content Column (Left - 7/12) */}
-          <div className="lg:col-span-7 space-y-5">
-            {/* Box 1: Info Utama */}
-            <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-5">
-              <div className="flex items-center gap-2 mb-1">
+          {/* Main Column: Info Utama (8/12) */}
+          <div className="lg:col-span-8 space-y-6">
+            <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-6">
+              <div className="flex items-center gap-2.5">
                 <div className="p-1.5 bg-slate-50 rounded-lg border border-slate-100">
                   <FileText className="w-4 h-4 text-slate-400" />
                 </div>
                 <h3 className="text-xs font-bold text-slate-900 uppercase tracking-widest">Informasi Utama</h3>
               </div>
-              
+
+              {/* Judul (Full) */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">Judul Rapat</label>
+                <div className="relative group">
+                  <Type className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 group-focus-within:text-[#431317] transition-colors" />
+                  <input 
+                    required 
+                    value={title} 
+                    onChange={e => setTitle(e.target.value)} 
+                    className="flex h-11 w-full rounded-xl border border-slate-200 bg-white pl-11 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#431317]/15 focus:border-[#431317] transition-all" 
+                    placeholder="Masukkan nama rapat..." 
+                  />
+                </div>
+              </div>
+
+              {/* Row 1: Tanggal + Tempat */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">Judul Rapat</label>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">Tanggal</label>
                   <div className="relative group">
-                    <Type className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 group-focus-within:text-[#431317] transition-colors" />
-                    <input 
-                      required 
-                      value={title} 
-                      onChange={e => setTitle(e.target.value)} 
-                      className="flex h-12 w-full rounded-xl border border-slate-200 bg-white pl-11 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-[#431317]/20 focus:border-[#431317] transition-all" 
-                      placeholder="Masukkan nama rapat..." 
-                    />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">Tanggal Rapat</label>
-                  <div className="relative group">
-                    <Calendar className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 group-focus-within:text-[#431317] transition-colors" />
+                    <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 group-focus-within:text-[#431317] transition-colors" />
                     <input 
                       type="date" 
                       required 
                       value={date} 
                       onChange={e => setDate(e.target.value)} 
-                      className="flex h-12 w-full rounded-xl border border-slate-200 bg-white pl-11 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-[#431317]/20 focus:border-[#431317] transition-all" 
+                      className="flex h-11 w-full rounded-xl border border-slate-200 bg-white pl-11 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#431317]/15 focus:border-[#431317] transition-all" 
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">Tempat</label>
+                  <div className="relative group">
+                    <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 group-focus-within:text-[#431317] transition-colors" />
+                    <input 
+                      value={location} 
+                      onChange={e => setLocation(e.target.value)} 
+                      className="flex h-11 w-full rounded-xl border border-slate-200 bg-white pl-11 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#431317]/15 focus:border-[#431317] transition-all" 
+                      placeholder="Contoh: Ruang Rapat Lt. 2" 
                     />
                   </div>
                 </div>
               </div>
 
+              {/* Row 2: Waktu (Mulai + Selesai) */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">Mulai</label>
+                  <div className="relative group">
+                    <Clock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 group-focus-within:text-[#431317] transition-colors" />
+                    <input 
+                      type="time" 
+                      value={startTime} 
+                      onChange={e => setStartTime(e.target.value)} 
+                      className="flex h-11 w-full rounded-xl border border-slate-200 bg-white pl-11 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#431317]/15 focus:border-[#431317] transition-all" 
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">Selesai</label>
+                  <div className="relative group">
+                    <Clock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 group-focus-within:text-[#431317] transition-colors" />
+                    <input 
+                      type="time" 
+                      value={endTime} 
+                      onChange={e => setEndTime(e.target.value)} 
+                      className="flex h-11 w-full rounded-xl border border-slate-200 bg-white pl-11 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#431317]/15 focus:border-[#431317] transition-all" 
+                      placeholder="Opsional"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Row 3: Sub-Bagian + Kategori */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* Sub-Bagian — from Firestore */}
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">Sub-Bagian</label>
                   <div className="relative group">
-                    <Component className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 group-focus-within:text-[#431317] transition-colors" />
+                    <Component className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 group-focus-within:text-[#431317] transition-colors" />
                     <select 
                       required 
                       value={subBagian} 
                       onChange={e => setSubBagian(e.target.value)} 
                       disabled={loadingSB}
-                      className="flex h-12 w-full rounded-xl border border-slate-200 bg-white pl-11 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-[#431317]/20 focus:border-[#431317] transition-all appearance-none disabled:opacity-60"
+                      className="flex h-11 w-full rounded-xl border border-slate-200 bg-white pl-11 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#431317]/15 focus:border-[#431317] transition-all appearance-none disabled:opacity-60"
                     >
                       <option value="" disabled>
-                        {loadingSB ? 'Memuat...' : 'Pilih Sub-Bagian...'}
+                        {loadingSB ? 'Memuat...' : 'Pilih...'}
                       </option>
                       {subBagianList.map(sb => (
-                        <option key={sb.id} value={sb.code}>{sb.code} — {sb.name}</option>
+                        <option key={sb.id} value={sb.code}>{sb.code}</option>
                       ))}
                     </select>
                     <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
@@ -272,18 +274,14 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
                     </div>
                   </div>
                 </div>
-
-                {/* Kategori Rapat — optional category selection */}
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">
-                    Kategori Rapat <span className="text-slate-300 font-normal normal-case">(opsional)</span>
-                  </label>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">Kategori</label>
                   <div className="relative group">
-                    <Tag className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 group-focus-within:text-[#431317] transition-colors" />
+                    <Tag className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 group-focus-within:text-[#431317] transition-colors" />
                     <select
                       value={selectedCategoryId}
                       onChange={e => handleCategoryChange(e.target.value)}
-                      className="flex h-12 w-full rounded-xl border border-slate-200 bg-white pl-11 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-[#431317]/20 focus:border-[#431317] transition-all appearance-none"
+                      className="flex h-11 w-full rounded-xl border border-slate-200 bg-white pl-11 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#431317]/15 focus:border-[#431317] transition-all appearance-none"
                     >
                       <option value="">Tanpa kategori</option>
                       {categories.map(c => (
@@ -296,38 +294,29 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
                       </svg>
                     </div>
                   </div>
-                  {selectedCategoryId && (
-                    <p className="text-[10px] text-emerald-600 font-medium ml-1">
-                      ✓ Peserta dari kategori otomatis ditambahkan
-                    </p>
-                  )}
                 </div>
               </div>
 
-              {/* Participants Section */}
+              {/* Peserta (Compact) */}
               <div className="space-y-3">
-                <label className="text-[10px] font-bold text-slate-500 uppercase ml-1 flex items-center gap-2">
+                <label className="text-[10px] font-bold text-slate-500 uppercase ml-1 flex items-center justify-between">
                   Daftar Peserta
-                  <span className="text-slate-300 font-normal normal-case">(Nama - Jabatan)</span>
-                  <span className={`ml-auto text-[9px] px-2 py-0.5 rounded font-bold ${
-                    participantList.length > 0 ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-slate-50 text-slate-400 border border-slate-100'
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
+                    participantList.length > 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-50 text-slate-400'
                   }`}>
-                    {participantList.length} peserta
+                    {participantList.length} total
                   </span>
                 </label>
 
-                {/* Participant Chips */}
                 {participantList.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 p-3 bg-slate-50/50 border border-slate-100 rounded-xl min-h-[52px]">
+                  <div className="flex flex-wrap gap-1.5 p-3 bg-slate-50/50 border border-slate-100 rounded-xl max-h-24 overflow-y-auto custom-scrollbar">
                     {participantList.map((p, i) => (
                       <ParticipantChip key={i} label={p} onRemove={() => removeParticipant(i)} />
                     ))}
                   </div>
                 )}
 
-                {/* Add from global / manual */}
                 <div className="flex gap-2">
-                  {/* Global dropdown */}
                   <div className="relative flex-1" ref={dropdownRef}>
                     <button
                       type="button"
@@ -335,7 +324,7 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
                       className="w-full h-10 flex items-center gap-2 px-3 bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-500 hover:border-[#431317]/30 hover:text-[#431317] transition-all"
                     >
                       <Users className="w-3.5 h-3.5" />
-                      Pilih dari Daftar
+                      Daftar
                     </button>
                     {showParticipantDropdown && (
                       <div className="absolute top-full mt-1 left-0 right-0 z-50 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden animate-in slide-in-from-top-2 duration-150">
@@ -344,29 +333,24 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
                             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-300" />
                             <input
                               type="text"
-                              placeholder="Cari peserta..."
+                              placeholder="Cari..."
                               value={participantSearch}
                               onChange={e => setParticipantSearch(e.target.value)}
-                              className="w-full h-8 pl-8 pr-3 text-xs font-medium bg-slate-50 border border-slate-100 rounded-lg focus:outline-none focus:border-[#431317]/30"
+                              className="w-full h-8 pl-8 pr-3 text-xs font-medium bg-slate-50 border border-slate-100 rounded-lg focus:outline-none"
                             />
                           </div>
                         </div>
-                        <div className="max-h-48 overflow-y-auto">
+                        <div className="max-h-40 overflow-y-auto">
                           {filteredGlobalParticipants.length === 0 ? (
-                            <p className="px-3 py-4 text-xs text-slate-400 text-center font-medium">
-                              {globalParticipants.length === 0 ? 'Belum ada peserta di database' : 'Semua peserta sudah ditambahkan'}
-                            </p>
+                            <p className="px-3 py-4 text-[10px] text-slate-400 text-center font-medium">Kosong</p>
                           ) : (
                             filteredGlobalParticipants.map(p => (
                               <button
                                 key={p.id}
                                 type="button"
                                 onClick={() => addFromGlobal(p)}
-                                className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 transition-colors text-left"
+                                className="w-full flex items-center gap-3 px-3 py-2 hover:bg-slate-50 text-left"
                               >
-                                <div className="w-6 h-6 bg-slate-100 rounded-md flex items-center justify-center shrink-0">
-                                  <span className="text-[9px] font-black text-slate-500">{p.name.charAt(0)}</span>
-                                </div>
                                 <div className="min-w-0">
                                   <p className="text-xs font-bold text-slate-900 truncate">{p.name}</p>
                                   <p className="text-[10px] text-slate-400 truncate">{p.jabatan}</p>
@@ -379,110 +363,64 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
                     )}
                   </div>
 
-                  {/* Manual input */}
-                  <div className="flex-1 flex gap-1.5">
+                  <div className="flex-[2] flex gap-2">
                     <input
                       type="text"
                       value={manualInput}
                       onChange={e => setManualInput(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addManualParticipant(); } }}
-                      placeholder="Manual: Nama - Jabatan"
-                      className="flex-1 h-10 px-3 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-1 focus:ring-[#431317]/20 focus:border-[#431317] transition-all"
+                      placeholder="Nama - Jabatan"
+                      className="flex-1 h-10 px-3 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-[#431317]/15 focus:border-[#431317] transition-all"
                     />
                     <button
                       type="button"
                       onClick={addManualParticipant}
                       className="h-10 w-10 flex items-center justify-center bg-white border border-slate-200 rounded-xl text-slate-400 hover:text-[#431317] hover:border-[#431317]/30 transition-all"
                     >
-                      <Plus className="w-3.5 h-3.5" />
+                      <Plus className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
               </div>
-            </div>
-
-            {/* Box 2: Gaya Referensi */}
-            <div className="bg-white rounded-2xl border border-slate-200 p-6 flex flex-col justify-between">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <div className="p-1.5 bg-slate-50 rounded-lg border border-slate-100">
-                    <Sparkles className="w-4 h-4 text-slate-400" />
-                  </div>
-                  <h3 className="text-xs font-bold text-slate-900 uppercase tracking-widest">Gaya Referensi</h3>
-                </div>
-                {styleStatus === 'success' && (
-                   <span className="text-[9px] font-extrabold text-emerald-600 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded uppercase">Sudah Dipelajari</span>
-                )}
-              </div>
-
-              {!refFile ? (
-                <button 
-                  type="button" 
-                  onClick={() => refFileInputRef.current?.click()} 
-                  className="w-full py-6 border border-dashed border-slate-200 rounded-xl text-xs font-bold text-slate-400 hover:bg-slate-50 hover:text-[#431317] hover:border-[#431317]/30 flex flex-col items-center justify-center gap-2 transition-all group"
-                >
-                  <Upload className="w-6 h-6 text-slate-300 group-hover:text-[#431317] transition-colors" />
-                  <span>Klik untuk Unggah Template (.PDF/.DOCX)</span>
-                </button>
-              ) : (
-                <div className="flex items-center gap-3">
-                  <div className="flex-1 flex items-center gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100">
-                    <FileText className="w-5 h-5 text-[#431317]" />
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-[11px] font-bold text-slate-900 truncate">{refFile.name}</span>
-                      <span className="text-[9px] text-slate-500">Template Terpilih</span>
-                    </div>
-                  </div>
-                  <button type="button" onClick={() => { setRefFile(null); setStyleStatus('none'); }} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"><X className="w-4 h-4" /></button>
-                  {styleStatus === 'none' && (
-                    <button 
-                      type="button" 
-                      onClick={handleAnalyzeStyle} 
-                      className="h-11 px-4 bg-[#431317] text-white rounded-xl text-xs font-bold hover:bg-[#5a1a1f] transition-all flex items-center gap-2"
-                    >
-                      Mempelajari
-                    </button>
-                  )}
-                </div>
-              )}
             </div>
           </div>
 
-          {/* Side Column (Right - 5/12) */}
-          <div className="lg:col-span-5 space-y-5 flex flex-col">
-            {/* Box 3: Mode Pemrosesan */}
-            <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-5">
-              <div className="flex items-center gap-2">
+          {/* Sidebar: Mode & Action (4/12) */}
+          <div className="lg:col-span-4 space-y-6 lg:sticky lg:top-6">
+            <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-6">
+              <div className="flex items-center gap-2.5">
                 <div className="p-1.5 bg-slate-50 rounded-lg border border-slate-100">
                   <Mic className="w-4 h-4 text-slate-400" />
                 </div>
                 <h3 className="text-xs font-bold text-slate-900 uppercase tracking-widest">Mode Pemrosesan</h3>
               </div>
               
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 lg:grid-cols-1 gap-3">
                 {[
-                  { id: 'live', label: 'Live Mic', icon: Mic, desc: 'Rekam Langsung' },
-                  { id: 'upload', label: 'File Audio', icon: Music, desc: 'Gunakan MP3/WAV' }
+                  { id: 'live', label: 'Live Mic', icon: Mic, desc: 'Rekam Sekarang' },
+                  { id: 'upload', label: 'File Audio', icon: Music, desc: 'Unggah MP3/WAV' }
                 ].map((mode) => (
                   <button
                     key={mode.id}
                     type="button"
                     onClick={() => setInputMode(mode.id as InputMode)}
-                    className={`group flex flex-col items-start p-4 rounded-xl border transition-all duration-300 text-left ${
+                    className={`group flex items-center gap-4 p-4 rounded-xl border transition-all duration-300 text-left ${
                       inputMode === mode.id 
                       ? 'border-[#431317] bg-[#431317] text-white shadow-none' 
                       : 'border-slate-100 bg-slate-50/50 text-slate-500 hover:border-slate-200 hover:bg-white'
                     }`}
                   >
-                    <mode.icon className={`w-5 h-5 mb-3 ${inputMode === mode.id ? 'text-white' : 'text-slate-400'}`} />
-                    <span className="text-xs font-extrabold block mb-1">{mode.label}</span>
-                    <span className={`text-[9px] ${inputMode === mode.id ? 'text-white/70' : 'text-slate-400'}`}>{mode.desc}</span>
+                    <mode.icon className={`w-5 h-5 ${inputMode === mode.id ? 'text-white' : 'text-slate-400'}`} />
+                    <div className="min-w-0">
+                      <span className="text-sm font-extrabold block">{mode.label}</span>
+                      <span className={`text-[10px] ${inputMode === mode.id ? 'text-white/70' : 'text-slate-400'}`}>{mode.desc}</span>
+                    </div>
                   </button>
                 ))}
               </div>
 
               {inputMode === 'upload' && (
-                <div className="animate-in slide-in-from-top-4 duration-300">
+                <div className="animate-in slide-in-from-top-4 duration-300 pt-2">
                   <div 
                     className="p-4 border border-dashed border-slate-200 bg-slate-50/30 rounded-xl text-center cursor-pointer hover:bg-white hover:border-[#431317]/20 transition-all"
                     onClick={() => audioFileInputRef.current?.click()}
@@ -490,18 +428,18 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
                     <input type="file" ref={audioFileInputRef} onChange={handleAudioFileChange} className="hidden" accept="audio/*" />
                     {audioFile ? (
                       <div className="flex items-center gap-3 text-left">
-                        <div className="p-2 bg-red-50 rounded-lg">
+                        <div className="p-2 bg-red-50 rounded-lg shrink-0">
                           <Music className="w-4 h-4 text-[#431317]" />
                         </div>
                         <div className="flex flex-col min-w-0">
-                          <span className="text-[11px] font-bold text-slate-900 truncate">{audioFile.name}</span>
-                          <span className="text-[9px] text-slate-400">File audio siap diproses</span>
+                          <span className="text-xs font-bold text-slate-900 truncate">{audioFile.name}</span>
+                          <span className="text-[10px] text-slate-400">Siap diproses</span>
                         </div>
                       </div>
                     ) : (
-                      <div className="flex flex-col items-center gap-1 py-1">
+                      <div className="flex flex-col items-center gap-2 py-1">
                         <Upload className="w-4 h-4 text-slate-300" />
-                        <span className="text-[10px] font-bold text-slate-500">Unggah Berkas Audio</span>
+                        <span className="text-[10px] font-bold text-slate-500">Unggah Audio</span>
                       </div>
                     )}
                   </div>
@@ -509,51 +447,15 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
               )}
             </div>
 
-            {/* Box 4: Dokumentasi */}
-            <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4 flex-1">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-slate-50 rounded-lg border border-slate-100">
-                  <Upload className="w-4 h-4 text-slate-400" />
-                </div>
-                <h3 className="text-xs font-bold text-slate-900 uppercase tracking-widest">Dokumentasi</h3>
-              </div>
-              
-              <div className="grid grid-cols-3 gap-2">
-                {documentationPhotos.map((photo, index) => (
-                  <div key={index} className="relative aspect-square rounded-lg overflow-hidden border border-slate-100 group">
-                    <img src={URL.createObjectURL(photo)} alt={`Preview ${index}`} className="w-full h-full object-cover" />
-                    <button 
-                      type="button"
-                      onClick={() => removePhoto(index)}
-                      className="absolute inset-0 bg-red-600/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
-                
-                {documentationPhotos.length < 10 && (
-                  <button 
-                    type="button" 
-                    onClick={() => photoInputRef.current?.click()}
-                    className="aspect-square rounded-lg border border-dashed border-slate-200 bg-slate-50/10 flex flex-col items-center justify-center gap-1 hover:bg-slate-50 hover:border-[#431317]/30 transition-all font-bold text-slate-400"
-                  >
-                    <Upload className="w-4 h-4 text-slate-300" />
-                    <span className="text-[8px] uppercase tracking-tighter">Unggah</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
             {/* Submit */}
             <button 
               type="submit" 
-              disabled={(inputMode === 'upload' && !audioFile) || styleStatus === 'analyzing'} 
+              disabled={(inputMode === 'upload' && !audioFile)}
               className="w-full bg-[#431317] hover:bg-[#5a1a1f] text-white h-16 rounded-2xl font-bold flex items-center justify-center gap-3 transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed group shadow-none border border-[#431317]"
             >
               <div className="text-left">
-                <span className="block text-sm uppercase tracking-widest">Mulai Sekarang</span>
-                <span className="block text-[9px] text-white/60 font-medium">Sistem Notulensi akan segera aktif</span>
+                <span className="block text-sm uppercase tracking-widest">Mulai Sesi</span>
+                <span className="block text-[9px] text-white/60 font-medium">Aktifkan Notulensi Otomatis</span>
               </div>
               <div className="h-8 w-8 bg-white/10 rounded-xl flex items-center justify-center group-hover:bg-white/20 transition-colors">
                 <ArrowRight className="w-4 h-4" />
@@ -571,8 +473,7 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
         )}
       </form>
 
-      <input type="file" ref={refFileInputRef} onChange={handleRefFileChange} className="hidden" accept=".pdf,.docx" />
-      <input type="file" ref={photoInputRef} onChange={handlePhotoChange} className="hidden" accept="image/*" multiple />
+      <input type="file" ref={audioFileInputRef} onChange={handleAudioFileChange} className="hidden" accept="audio/*" />
     </div>
   );
 };

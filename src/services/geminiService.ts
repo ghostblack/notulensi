@@ -4,7 +4,7 @@ import { fileToBase64 } from '@/utils/fileHelpers';
 import { MeetingContext } from '@/types';
 
 const PROXY_URL = "/.netlify/functions/gemini-proxy";
-const MODEL_NAME = "gemini-2.5-flash"; // Standard stable Free Tier model in 2026
+const MODEL_NAME = "gemini-2.5-flash"; // Switched to 2.5 Flash (Stable & Latest)
 const KPU_LOGO_URL = "https://ik.imagekit.io/gambarid/file%20kpu/KPU_Logo.svg.png?updatedAt=1768041033309";
 
 // Rate limiting state
@@ -21,33 +21,66 @@ const waitIfNeeded = async () => {
   lastRequestTime = Date.now();
 };
 
-const callGeminiProxy = async (action: string, payload: any): Promise<string> => {
-  await waitIfNeeded();
+const callGeminiProxy = async (action: string, payload: any, maxRetries = 6, baseDelay = 4000): Promise<string> => {
+  let attempt = 0;
   
-  const response = await fetch(PROXY_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, payload })
-  });
-
-  if (!response.ok) {
-    const contentType = response.headers.get("content-type");
-    if (contentType && contentType.includes("application/json")) {
-      const errData = await response.json();
-      throw new Error(errData.error || `Server error (${response.status})`);
+  while (attempt < maxRetries) {
+    if (attempt > 0) {
+      // Exponential backoff with some random jitter
+      const delay = baseDelay * Math.pow(1.5, attempt - 1) + Math.random() * 1000;
+      console.log(`[Gemini API] Server sibuk. Percobaan ulang (${attempt + 1}/${maxRetries}) setelah ${Math.round(delay)}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
     } else {
-      const text = await response.text();
-      throw new Error(text || `Request failed with status ${response.status}`);
+      await waitIfNeeded();
+    }
+    
+    try {
+      const response = await fetch(PROXY_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, payload })
+      });
+
+      if (!response.ok) {
+        const contentType = response.headers.get("content-type");
+        let errMsg = `Gagal dengan status ${response.status}`;
+        if (contentType && contentType.includes("application/json")) {
+          const errData = await response.json();
+          errMsg = errData.error || errMsg;
+        } else {
+          const text = await response.text();
+          errMsg = text || errMsg;
+        }
+        throw new Error(errMsg);
+      }
+
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("Server tidak mengembalikan format JSON yang valid.");
+      }
+
+      const data = await response.json();
+      return data.text;
+      
+    } catch (error: any) {
+      const errMsg = error.message.toLowerCase();
+      // Retry if it's a known overload/rate limit issue or network error
+      const shouldRetry = errMsg.includes("503") || errMsg.includes("429") || errMsg.includes("high demand") || errMsg.includes("temporarily overloaded") || errMsg.includes("fetch") || errMsg.includes("network");
+      
+      console.error(`[Gemini API] Error pada percobaan ${attempt + 1}: ${error.message}`);
+      
+      if (shouldRetry && attempt < maxRetries - 1) {
+        attempt++;
+      } else if (attempt < maxRetries - 1) {
+        // Even for 500s or other errors, sometimes just retrying once or twice helps with transient function crashes
+        attempt++;
+      } else {
+        throw new Error(`Sistem AI sedang sangat sibuk setelah ${maxRetries} percobaan. Silakan coba lagi nanti. Detail: ${error.message}`);
+      }
     }
   }
-
-  const contentType = response.headers.get("content-type");
-  if (!contentType || !contentType.includes("application/json")) {
-    throw new Error("Server did not return JSON. Check if Netlify Functions are running.");
-  }
-
-  const data = await response.json();
-  return data.text;
+  
+  throw new Error("Terjadi kesalahan yang tidak terduga saat menghubungi AI.");
 };
 
 export const analyzeDocumentStyle = async (file: File): Promise<string> => {
@@ -144,8 +177,8 @@ export const generateFinalMinutesFromText = async (fullTranscript: string, conte
 ---
 
 **Hari, tanggal** : ${context.date}
-**Pukul** : [WAKTU MULAI] WIB s.d. Selesai
-**Tempat** : [TEMPAT RAPAT]
+**Pukul** : ${context.startTime || '[JAM MULAI]'} WIB s.d. ${context.endTime || 'Selesai'}
+**Tempat** : ${context.location || '[TEMPAT RAPAT]'}
 
 **PESERTA RAPAT YANG HADIR BERDASARKAN YANG MENANDATANGANI DAFTAR HADIR**
 
@@ -155,6 +188,11 @@ ${context.participants.split(/,|\n/).map((p, i) => `${i + 1}. ${p.trim()}`).join
 
 **AGENDA RAPAT:**
 1. [ISI AGENDA BERDASARKAN TRANSKRIP]
+
+---
+
+**KESIMPULAN / HASIL RAPAT:**
+* [RINGKASAN POIN-POIN PENTING HASIL RAPAT DI SINI]
 `;
 
   const photoPlaceholders = context.documentationPhotos 
@@ -175,6 +213,7 @@ ${context.participants.split(/,|\n/).map((p, i) => `${i + 1}. ${p.trim()}`).join
     4. STRUKTUR: Ikuti struktur dokumen dasar yang diberikan di bawah.
     5. LOGO: Baris pertama HARUS ![Logo KPU](${KPU_LOGO_URL}).
     6. DOKUMENTASI: Letakkan placeholder [DOKUMENTASI_FOTO_DI_SINI] di bagian paling akhir dokumen.
+    7. KESIMPULAN: WAJIB menyertakan bagian "KESIMPULAN / HASIL RAPAT" yang berisi poin-poin ringkasan hasil rapat sebelum bagian dokumentasi foto.
     
     DATA TRANSKRIP UNTUK DIPROSES:
     ${fullTranscript}

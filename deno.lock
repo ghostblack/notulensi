@@ -12,22 +12,28 @@
     "packageJson": {
       "dependencies": [
         "npm:@google/genai@^1.33.0",
+        "npm:@netlify/functions@^5.1.5",
         "npm:@tailwindcss/vite@^4.2.0",
         "npm:@tiptap/react@^3.21.0",
         "npm:@tiptap/starter-kit@^3.21.0",
         "npm:@types/node@^22.14.0",
+        "npm:@types/react-router-dom@^5.3.3",
         "npm:@vitejs/plugin-react@^5.1.2",
+        "npm:firebase-admin@^13.7.0",
         "npm:firebase@^12.9.0",
         "npm:googleapis@^171.4.0",
         "npm:html-to-image@^1.11.11",
+        "npm:html2pdf.js@0.14",
         "npm:jspdf@^2.5.1",
         "npm:lucide-react@0.560",
         "npm:react-dom@^19.2.3",
         "npm:react-markdown@^10.1.0",
+        "npm:react-router-dom@^7.14.0",
         "npm:react@^19.2.3",
         "npm:remark-gfm@4",
         "npm:tailwindcss@^4.2.0",
         "npm:tiptap-markdown@0.9",
+        "npm:tsx@^4.21.0",
         "npm:typescript@~5.8.2",
         "npm:vite@^6.2.0"
       ]
