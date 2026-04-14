@@ -141,6 +141,25 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleManualPhotoUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []).slice(0, 4);
+    if (files.length === 0) return;
+
+    const urls = files.map(file => URL.createObjectURL(file));
+    setPhotoUrls(urls);
+
+    const base64List: string[] = [];
+    for (const file of files) {
+      try {
+        const b64 = await compressImageToBase64DataUri(file);
+        base64List.push(b64);
+      } catch (err) {
+        console.error('Failed to compress manually uploaded photo:', err);
+      }
+    }
+    setPhotoBase64s(base64List);
+  };
+
   // Returns base64 string (no data URI prefix) for Drive upload
   const compressImage = async (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -400,11 +419,12 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
       const htmlContent = await markdownToHtml(currentContent, photoBase64s, true);
 
       const opt: any = {
-        margin: [25.4, 25.4, 25.4, 25.4],
+        margin: [20, 15, 20, 15], // Atas, Kanan, Bawah, Kiri (dalam mm)
         filename: `${title}.pdf`,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true, windowWidth: 602 },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+        image: { type: 'jpeg', quality: 0.8 },
+        html2canvas: { scale: 1.2, useCORS: true, windowWidth: 602 },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait', compress: true },
+        pagebreak: { mode: ['css', 'legacy'], avoid: ['p', 'li', 'h1', 'h2', 'h3', 'table', 'tr', 'img', '.page-break-avoid'] }
       };
 
       const pdfBlob = await html2pdf().set(opt).from(htmlContent).output('blob');
@@ -593,34 +613,48 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
 
                         if (isPlaceholder) {
                           const limitedPhotos = photoUrls.slice(0, 4);
-                          if (limitedPhotos.length === 0) return null;
+                          const isMissingPhotosForExport = limitedPhotos.length === 0 || photoBase64s.length === 0;
 
                           return (
                             <div className="mt-8 pt-6 border-t border-slate-200 placeholder-container page-break-avoid" key="documentation-gallery">
-                              <div className="grid grid-cols-2 gap-6">
-                                {limitedPhotos.map((url, idx) => (
-                                  <div 
-                                    key={idx} 
-                                    className="flex flex-col gap-3 photo-card" 
-                                    style={{ 
-                                      breakInside: 'avoid', 
-                                      pageBreakInside: 'avoid',
-                                      display: 'block', // Block display helps break-inside
-                                      marginBottom: '2rem'
-                                    }}
-                                  >
-                                    <div className="aspect-[4/3] rounded-2xl overflow-hidden border border-slate-200 shadow-sm bg-slate-50">
-                                      <img 
-                                        src={url} 
-                                        alt={`Dokumentasi ${idx}`} 
-                                        className="w-full h-full object-cover"
-                                        referrerPolicy="no-referrer"
-                                      />
+                              {isMissingPhotosForExport && (
+                               <div className="flex flex-col mb-6 items-center justify-center p-5 bg-amber-50 border border-amber-200 rounded-xl no-print">
+                                  <p className="text-amber-900 text-[11pt] text-center mb-3 max-w-lg leading-relaxed">
+                                    <strong>Dokumentasi Foto Kosong / Link Riwayat Terputus.</strong><br/>
+                                    Jika notulensi ini dari Riwayat, fitur pengarsipan Google otomatis memutuskan link foto. Silakan unggah sisipkan ulang foto Anda disini agar ikut tercetak di PDF.
+                                  </p>
+                                  <label className="cursor-pointer bg-amber-500 text-white text-[10pt] font-bold py-2.5 px-5 rounded-xl hover:bg-amber-600 transition shadow-sm">
+                                    SUNTIKKAN ULANG FOTO (MAKS 4)
+                                    <input type="file" multiple accept="image/*" className="hidden" onChange={handleManualPhotoUpload} />
+                                  </label>
+                               </div>
+                              )}
+                              {limitedPhotos.length > 0 && (
+                                <div className="grid grid-cols-2 gap-6">
+                                  {limitedPhotos.map((url, idx) => (
+                                    <div 
+                                      key={idx} 
+                                      className="flex flex-col gap-3 photo-card" 
+                                      style={{ 
+                                        breakInside: 'avoid', 
+                                        pageBreakInside: 'avoid',
+                                        display: 'block', // Block display helps break-inside
+                                        marginBottom: '2rem'
+                                      }}
+                                    >
+                                      <div className="aspect-[4/3] rounded-2xl overflow-hidden border border-slate-200 shadow-sm bg-slate-50">
+                                        <img 
+                                          src={url} 
+                                          alt={`Dokumentasi ${idx}`} 
+                                          className="w-full h-full object-cover"
+                                          referrerPolicy="no-referrer"
+                                        />
+                                      </div>
+                                      <p className="text-[10px] text-center text-slate-500 font-bold uppercase tracking-widest">Foto Dokumentasi {idx + 1}</p>
                                     </div>
-                                    <p className="text-[10px] text-center text-slate-500 font-bold uppercase tracking-widest">Foto Dokumentasi {idx + 1}</p>
-                                  </div>
-                                ))}
-                              </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           );
                         }

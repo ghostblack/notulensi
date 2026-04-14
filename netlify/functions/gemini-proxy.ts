@@ -1,12 +1,24 @@
 
 import { GoogleGenAI } from "@google/genai";
 
+// CORS headers untuk semua response
+const CORS_HEADERS = {
+  "Content-Type": "application/json",
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
 export const handler = async (event: any) => {
+  // Handle CORS preflight
+  if (event.httpMethod === "OPTIONS") {
+    return { statusCode: 204, headers: CORS_HEADERS, body: "" };
+  }
+
   // Hanya izinkan metode POST
   if (event.httpMethod !== "POST") {
     return { 
       statusCode: 405, 
-      headers: { "Content-Type": "application/json" },
+      headers: CORS_HEADERS,
       body: JSON.stringify({ error: "Method Not Allowed" }) 
     };
   }
@@ -18,7 +30,7 @@ export const handler = async (event: any) => {
     if (!apiKey) {
       return {
         statusCode: 500,
-        headers: { "Content-Type": "application/json" },
+        headers: CORS_HEADERS,
         body: JSON.stringify({ error: "Gemini API Key tidak terkonfigurasi di server." })
       };
     }
@@ -28,14 +40,16 @@ export const handler = async (event: any) => {
     let text = "";
 
     switch (action) {
-      case "generateContent":
+      case "generateContent": {
+        // Gunakan model dari payload (client mengirim model spesifik dari fallback chain)
+        const modelName = payload.model || "gemini-2.5-flash";
+        console.log(`[Proxy] Memanggil model: ${modelName}`);
+
         const result = await genAI.models.generateContent({
-          model: payload.model || "gemini-2.5-flash",
+          model: modelName,
           contents: payload.contents,
-          config: {
-            // Ensure we get full response, not streaming chunks
-            thinkingConfig: { thinkingBudget: 0 } // Disable thinking for faster response
-          }
+          // TIDAK menggunakan thinkingConfig agar kompatibel dengan semua model.
+          // thinkingBudget: 0 pada gemini-2.5-flash menyebabkan empty response.
         });
 
         // Robust text extraction - handle multiple response formats
@@ -43,8 +57,12 @@ export const handler = async (event: any) => {
           text = result.text;
         } else if (result.candidates && result.candidates.length > 0) {
           const candidate = result.candidates[0];
+
+          // Log finish reason untuk debugging
+          console.log(`[Proxy] Finish reason: ${candidate.finishReason}`);
+
           if (candidate.content && candidate.content.parts) {
-            // Filter out thought parts, only get text parts
+            // Filter out thought parts, hanya ambil text parts
             const textParts = candidate.content.parts
               .filter((part: any) => part.text !== undefined && !part.thought)
               .map((part: any) => part.text)
@@ -54,33 +72,49 @@ export const handler = async (event: any) => {
         }
 
         if (!text) {
-          console.error("Empty response from Gemini. Full result:", JSON.stringify(result, null, 2));
+          const debugInfo = {
+            finishReason: result.candidates?.[0]?.finishReason,
+            candidatesCount: result.candidates?.length,
+            partsCount: result.candidates?.[0]?.content?.parts?.length,
+          };
+          console.error("[Proxy] Empty response dari Gemini:", JSON.stringify(debugInfo));
           return {
             statusCode: 500,
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ error: "Model mengembalikan respons kosong. Coba lagi." })
+            headers: CORS_HEADERS,
+            body: JSON.stringify({ 
+              error: `Model mengembalikan respons kosong (finishReason: ${debugInfo.finishReason || 'unknown'}). Silakan coba lagi.` 
+            })
           };
         }
         break;
+      }
       default:
         return { 
           statusCode: 400, 
-          headers: { "Content-Type": "application/json" },
+          headers: CORS_HEADERS,
           body: JSON.stringify({ error: "Invalid Action" }) 
         };
     }
 
     return {
       statusCode: 200,
-      headers: { "Content-Type": "application/json" },
+      headers: CORS_HEADERS,
       body: JSON.stringify({ text })
     };
   } catch (error: any) {
-    console.error("Proxy Error:", error);
+    const errMsg = error?.message || "Internal Server Error";
+    console.error("[Proxy] Error:", errMsg);
+    
+    // Deteksi error spesifik untuk pesan yang lebih informatif
+    const isOverloaded = errMsg.includes("503") || errMsg.includes("overloaded") || errMsg.includes("429");
+    const clientMessage = isOverloaded 
+      ? "Server Gemini sedang sangat sibuk. Silakan tunggu beberapa detik lalu coba lagi."
+      : errMsg;
+
     return {
-      statusCode: 500,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: error.message || "Internal Server Error" })
+      statusCode: isOverloaded ? 503 : 500,
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ error: clientMessage })
     };
   }
 };

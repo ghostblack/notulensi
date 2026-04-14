@@ -100,6 +100,7 @@ const App: React.FC = () => {
     setMinutes(null);
     setShowHistory(false);
     setError(null);
+    setProcessStatus(''); // Fix state text nyangkut
     accumulatedTranscripts.current = [];
     setFinalizationProgress(0);
   };
@@ -326,6 +327,7 @@ const App: React.FC = () => {
     setCurrentMeetingId(null);
     setShowHistory(true);
     setMeetingContext(null);
+    setProcessStatus(''); // Fix state text nyangkut
     localStorage.removeItem(SESSION_KEY);
   };
 
@@ -351,6 +353,7 @@ const App: React.FC = () => {
       setCurrentMeetingId(null);
       setShowHistory(true);
       setMeetingContext(null);
+      setProcessStatus(''); // Fix state text nyangkut
       localStorage.removeItem(SESSION_KEY);
     }
     setPendingAction(null);
@@ -373,7 +376,7 @@ const App: React.FC = () => {
       <div className="flex-1 flex flex-col min-w-0 bg-[#F8F9FA]/50 h-screen overflow-hidden">
         <Header user={user} onLogout={logOut} />
         
-        <main className={`flex-1 w-full px-4 sm:px-10 py-6 overflow-hidden flex flex-col`}>
+        <main className={`flex-1 w-full px-4 sm:px-10 pt-6 pb-24 md:pb-6 overflow-hidden flex flex-col`}>
           
           {status === AppStatus.IDLE && activeTab === 'dashboard' && (
             <div className="h-full flex flex-col space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500 overflow-y-auto overflow-x-hidden custom-scrollbar pr-1 pb-10 md:pb-0">

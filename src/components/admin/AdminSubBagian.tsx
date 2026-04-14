@@ -181,17 +181,17 @@ const AdminSubBagian: React.FC = () => {
                   </p>
                 </div>
                 {/* Actions */}
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="flex items-center gap-1 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-opacity">
                   <button
                     onClick={() => startEdit(sb)}
-                    className="p-1.5 text-slate-400 hover:text-[#431317] hover:bg-[#431317]/5 rounded-lg transition-all"
+                    className="p-2 sm:p-1.5 text-slate-400 hover:text-[#431317] hover:bg-[#431317]/5 rounded-lg transition-all active:scale-95"
                   >
                     <Pencil className="w-3.5 h-3.5" />
                   </button>
                   <button
                     onClick={() => handleDelete(sb)}
                     disabled={deleting === sb.id}
-                    className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all disabled:opacity-40"
+                    className="p-2 sm:p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all disabled:opacity-40 active:scale-95"
                   >
                     {deleting === sb.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                   </button>

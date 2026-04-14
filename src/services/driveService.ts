@@ -25,7 +25,7 @@ export const saveMeetingToDrive = async (
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ title, base64File, date, subBagian, photos, fileType }),
+      body: JSON.stringify({ title, base64File, date, subBagian, fileType }),
     });
 
     const data = await response.json();

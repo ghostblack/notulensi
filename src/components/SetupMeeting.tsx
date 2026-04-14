@@ -398,7 +398,7 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
               <div className="grid grid-cols-2 lg:grid-cols-1 gap-3">
                 {[
                   { id: 'live', label: 'Live Mic', icon: Mic, desc: 'Rekam Sekarang' },
-                  { id: 'upload', label: 'File Audio', icon: Music, desc: 'Unggah MP3/WAV' }
+                  { id: 'upload', label: 'File Audio', icon: Music, desc: 'MP3, M4A, WAV, dll' }
                 ].map((mode) => (
                   <button
                     key={mode.id}

@@ -244,17 +244,17 @@ const AdminParticipants: React.FC = () => {
                       <p className="text-xs font-bold text-slate-900 truncate">{p.name}</p>
                       <p className="text-[10px] text-slate-400 truncate">{p.jabatan}</p>
                     </div>
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="flex items-center gap-1 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         onClick={() => { setEditingP(p); setPForm({ name: p.name, jabatan: p.jabatan }); setShowPForm(false); }}
-                        className="p-1.5 text-slate-400 hover:text-[#431317] hover:bg-[#431317]/5 rounded-lg transition-all"
+                        className="p-2 sm:p-1.5 text-slate-400 hover:text-[#431317] hover:bg-[#431317]/5 rounded-lg transition-all active:scale-95"
                       >
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
                       <button
                         onClick={() => handleDeleteParticipant(p)}
                         disabled={deletingP === p.id}
-                        className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all disabled:opacity-40"
+                        className="p-2 sm:p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all disabled:opacity-40 active:scale-95"
                       >
                         {deletingP === p.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                       </button>
@@ -348,17 +348,17 @@ const AdminParticipants: React.FC = () => {
                           {c.description && ` • ${c.description}`}
                         </p>
                       </div>
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex items-center gap-1 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-opacity">
                         <button
                           onClick={e => { e.stopPropagation(); setEditingC(c); setCForm({ name: c.name, description: c.description || '' }); setShowCForm(false); }}
-                          className="p-1.5 text-slate-400 hover:text-[#431317] hover:bg-[#431317]/5 rounded-lg transition-all"
+                          className="p-2 sm:p-1.5 text-slate-400 hover:text-[#431317] hover:bg-[#431317]/5 rounded-lg transition-all active:scale-95"
                         >
                           <Pencil className="w-3 h-3" />
                         </button>
                         <button
                           onClick={e => { e.stopPropagation(); handleDeleteCategory(c); }}
                           disabled={deletingC === c.id}
-                          className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all disabled:opacity-40"
+                          className="p-2 sm:p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all disabled:opacity-40 active:scale-95"
                         >
                           {deletingC === c.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
                         </button>

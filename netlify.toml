@@ -4,6 +4,12 @@
 
 [functions]
   directory = "netlify/functions"
+  node_bundler = "esbuild"
+  included_files = ["netlify/functions/**"]
+
+[functions."gemini-proxy"]
+  timeout = 60
+
 
 [dev]
   framework = "vite"

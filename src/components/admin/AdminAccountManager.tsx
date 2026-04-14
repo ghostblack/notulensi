@@ -233,7 +233,7 @@ const AdminAccountManager: React.FC = () => {
                   <button
                     onClick={() => handleDelete(u.uid || u.id, u.displayName)}
                     disabled={deleting === (u.uid || u.id)}
-                    className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100 disabled:opacity-40"
+                    className="p-2 sm:p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-100 lg:opacity-0 group-hover:opacity-100 disabled:opacity-40 active:scale-95"
                   >
                     {deleting === (u.uid || u.id) ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
