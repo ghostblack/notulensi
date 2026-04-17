@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, FileText, Maximize2, Minimize2, Loader2, ArrowLeft, Edit3, Save, X as CloseIcon, Cloud, ExternalLink, AlertCircle } from 'lucide-react';
+import { Copy, Check, FileText, Maximize2, Minimize2, Loader2, ArrowLeft, Edit3, Save, X as CloseIcon, Cloud, ExternalLink, AlertCircle, Download } from 'lucide-react';
 import { saveMeetingToDrive } from '../services/driveService';
 import RichTextEditor from './RichTextEditor';
 
@@ -282,9 +282,9 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
       }
 
       // Headings
-      if (/^# /.test(line)) { closeList(); htmlLines.push(`<h1 style="text-align:center;font-size:14pt;font-weight:bold;text-transform:uppercase;margin-top:0;margin-bottom:12pt;">${inlineFormat(line.replace(/^# /, ''))}</h1>`); continue; }
-      if (/^## /.test(line)) { closeList(); htmlLines.push(`<h2 style="text-align:center;font-size:12pt;font-weight:bold;text-transform:uppercase;margin-top:0;margin-bottom:10pt;">${inlineFormat(line.replace(/^## /, ''))}</h2>`); continue; }
-      if (/^### /.test(line)) { closeList(); htmlLines.push(`<h3 style="text-align:center;font-size:11pt;font-weight:bold;text-transform:uppercase;border-bottom:1pt solid black;padding-bottom:10pt;margin-top:0;margin-bottom:18pt;">${inlineFormat(line.replace(/^### /, ''))}</h3>`); continue; }
+      if (/^# /.test(line)) { closeList(); htmlLines.push(`<h1 style="text-align:center;font-size:14pt;font-weight:bold;text-transform:uppercase;margin-top:0;margin-bottom:12pt;line-height:1.5;font-family:'Bookman Old Style',Georgia,serif;">${inlineFormat(line.replace(/^# /, ''))}</h1>`); continue; }
+      if (/^## /.test(line)) { closeList(); htmlLines.push(`<h2 style="text-align:center;font-size:12pt;font-weight:bold;text-transform:uppercase;margin-top:0;margin-bottom:10pt;line-height:1.5;font-family:'Bookman Old Style',Georgia,serif;">${inlineFormat(line.replace(/^## /, ''))}</h2>`); continue; }
+      if (/^### /.test(line)) { closeList(); htmlLines.push(`<h3 style="text-align:center;font-size:11pt;font-weight:bold;text-transform:uppercase;border-bottom:1pt solid black;padding-bottom:10pt;margin-top:0;margin-bottom:18pt;line-height:1.5;font-family:'Bookman Old Style',Georgia,serif;">${inlineFormat(line.replace(/^### /, ''))}</h3>`); continue; }
 
       // Horizontal rule
       if (/^---+$/.test(line.trim())) { closeList(); htmlLines.push('<hr/>'); continue; }
@@ -352,17 +352,20 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
 
       // Regular paragraph
       closeList();
-      htmlLines.push(`<p style="text-align:justify;line-height:1.5;margin-bottom:8pt;font-size:11pt;">${inlineFormat(line)}</p>`);
+      htmlLines.push(`<p style="text-align:justify;line-height:1.5;margin-bottom:6pt;font-size:11pt;font-family:'Bookman Old Style',Georgia,serif;">${inlineFormat(line)}</p>`);
     }
     closeList();
 
     return `<!DOCTYPE html><html lang="id"><head><meta charset="utf-8"><style>
-      body { font-family: Arial, sans-serif; font-size: 11pt; margin: 0; padding: 0; box-sizing: border-box; }
-      h1,h2,h3 { color: #000; }
-      p { color: #1a1a1a; }
+      @page { size: A4 portrait; margin: 2cm 1.5cm; }
+      body { font-family: 'Bookman Old Style', Georgia, 'Times New Roman', serif; font-size: 11pt; line-height: 1.5; margin: 0; padding: 20px 30px; box-sizing: border-box; color: #1a1a1a; }
+      h1,h2,h3 { color: #000; font-family: 'Bookman Old Style', Georgia, 'Times New Roman', serif; }
       strong { font-weight: bold; }
-      ul, ol { padding-left: 1.5em; }
+      ul, ol { padding-left: 1.5em; font-size: 11pt; line-height: 1.5; }
+      li { line-height: 1.5; margin-bottom: 4pt; }
       img { max-width: 100%; }
+      h1,h2,h3 { page-break-after: avoid; break-after: avoid; }
+      p,li,tr,img { page-break-inside: avoid; break-inside: avoid; }
     </style></head><body>${htmlLines.join('\n')}</body></html>`;
   };
 
@@ -412,33 +415,28 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
 
     try {
       const html2pdf = (await import('html2pdf.js')).default;
-      
       const title = meetingTitle || (content.match(/^#\s+(.+)$/m)?.[1]) || 'Rapat Tanpa Judul';
       
-      // Build HTML with base64-embedded photos so server can render them nicely
-      const htmlContent = await markdownToHtml(currentContent, photoBase64s, true);
+      // Buat HTML bersih dari markdown
+      const htmlContent = await markdownToHtml(currentContent, photoBase64s);
 
-      const opt: any = {
-        margin: [20, 15, 20, 15], // Atas, Kanan, Bawah, Kiri (dalam mm)
-        filename: `${title}.pdf`,
-        image: { type: 'jpeg', quality: 0.8 },
-        html2canvas: { scale: 1.2, useCORS: true, windowWidth: 602 },
+      // Convert HTML → PDF blob
+      const pdfBlob = await html2pdf().set({
+        margin: [20, 15, 20, 15],
+        image: { type: 'jpeg', quality: 0.85 },
+        html2canvas: { scale: 1.5, useCORS: true, windowWidth: 602 },
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait', compress: true },
-        pagebreak: { mode: ['css', 'legacy'], avoid: ['p', 'li', 'h1', 'h2', 'h3', 'table', 'tr', 'img', '.page-break-avoid'] }
-      };
+        pagebreak: { mode: ['css', 'legacy'], avoid: ['p', 'li', 'h1', 'h2', 'h3', 'img'] }
+      }).from(htmlContent).output('blob');
 
-      const pdfBlob = await html2pdf().set(opt).from(htmlContent).output('blob');
-
-      // Convert blob to base64 for upload
+      // Convert PDF blob → base64
       const base64File = await new Promise<string>((resolve) => {
         const reader = new FileReader();
-        reader.onloadend = () => {
-          const result = reader.result as string;
-          resolve(result.split(',')[1]);
-        };
+        reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
         reader.readAsDataURL(pdfBlob);
       });
       
+      // Upload sebagai PDF asli ke Drive (BUKAN Google Docs!)
       const result = await saveMeetingToDrive(title, base64File, meetingDate || '', meetingSubBagian || 'KUL', [], 'pdf');
       
       if (result.success && result.webViewLink) {
@@ -457,10 +455,27 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
     }
   };
 
+  const handleDownloadPdf = async () => {
+    const currentContent = editableContent || content;
+    const htmlContent = await markdownToHtml(currentContent, photoBase64s);
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      alert('Popup diblokir browser! Izinkan popup untuk situs ini agar bisa mengunduh PDF.');
+      return;
+    }
+    printWindow.document.write(htmlContent);
+    printWindow.document.close();
+    // Tunggu gambar load, lalu otomatis buka dialog Print → Save as PDF
+    setTimeout(() => {
+      printWindow.focus();
+      printWindow.print();
+    }, 1500);
+  };
+
   return (
     <div className={`w-full animate-in fade-in slide-in-from-bottom-4 duration-500 ${isFullWidth ? 'fixed inset-0 z-[60] bg-slate-100 p-4 sm:p-10 overflow-y-auto custom-scrollbar' : 'flex-1 h-full flex flex-col'}`}>
       {/* Action Toolbar */}
-      <div className={`bg-white rounded-xl border border-slate-200 shadow-none p-3 mb-6 flex items-center justify-between gap-2 sm:gap-4 transition-all ${isFullWidth ? 'max-w-5xl mx-auto sticky top-0 z-10' : ''}`}>
+      <div className={`bg-white rounded-xl border border-slate-200 shadow-none p-3 mb-6 flex items-center justify-between gap-2 sm:gap-4 transition-all print:hidden ${isFullWidth ? 'max-w-5xl mx-auto sticky top-0 z-10' : ''}`}>
         <div className="flex items-center gap-2 sm:gap-3">
           <button onClick={onReset} className="p-2 text-slate-400 hover:text-[#431317] rounded-lg hover:bg-slate-50 transition-colors">
             <ArrowLeft className="w-5 h-5 sm:w-4 sm:h-4" />
@@ -493,33 +508,41 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
           ) : (
             <>
               <button 
-            onClick={() => { setIsEditing(true); setIsFullWidth(true); }}
-            className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-slate-50 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-100 transition-all border border-slate-200"
-          >
-            <Edit3 className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">EDIT</span>
-          </button>
-              
-              <button 
-                onClick={() => setIsFullWidth(!isFullWidth)} 
-                className="hidden sm:flex p-2 text-slate-400 hover:bg-slate-50 hover:text-[#431317] rounded-lg transition-colors border border-transparent hover:border-slate-100"
-                title={isFullWidth ? "Perkecil" : "Perbesar"}
+                onClick={() => { setIsEditing(true); setIsFullWidth(true); }}
+                className="flex items-center gap-1.5 px-3 h-10 sm:h-9 bg-slate-50 text-slate-600 rounded-xl sm:rounded-lg text-xs font-bold hover:bg-slate-100 transition-all border border-slate-200"
               >
-                {isFullWidth ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                <Edit3 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">EDIT</span>
+              </button>
+
+              <button onClick={handleCopy} className="inline-flex items-center gap-1.5 px-3 h-10 sm:h-9 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-xl sm:rounded-lg hover:bg-slate-50 transition-all active:scale-95">
+                {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+                <span className="hidden sm:inline">{copied ? 'TERSALIN' : 'COPY'}</span>
               </button>
               
-              <button onClick={handleCopy} className="inline-flex items-center gap-1.5 px-3 h-10 sm:h-9 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-xl sm:rounded-lg hover:bg-slate-50 transition-all active:scale-95">
-                {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <span className="sm:hidden text-xs">COPY</span>}
-                <span className="hidden sm:inline">{copied ? 'TERSALIN' : 'COPY'}</span>
+              <button 
+                onClick={handleDownloadPdf}
+                className="inline-flex items-center gap-1.5 px-3 h-10 sm:h-9 text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded-xl sm:rounded-lg hover:bg-red-100 transition-all active:scale-95 shadow-none"
+              >
+                <Download className="w-4 h-4" />
+                <span className="hidden sm:inline">PDF</span>
+              </button>
+
+              <button 
+                onClick={handleDownloadWord}
+                className="inline-flex items-center gap-1.5 px-3 h-10 sm:h-9 text-xs font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded-xl sm:rounded-lg hover:bg-blue-100 transition-all active:scale-95 shadow-none"
+              >
+                <FileText className="w-4 h-4" />
+                <span className="hidden sm:inline">WORD</span>
               </button>
               
               <button 
                 onClick={handleSaveToDrive} 
                 disabled={isSavingToDrive}
-                className="inline-flex items-center gap-1.5 px-3 h-10 sm:h-9 text-xs font-bold text-emerald-600 bg-white border border-emerald-200 rounded-xl sm:rounded-lg hover:bg-emerald-50 disabled:opacity-50 transition-all active:scale-95 shadow-none"
+                className="inline-flex items-center gap-1.5 px-3 h-10 sm:h-9 text-xs font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-xl sm:rounded-lg hover:bg-emerald-100 disabled:opacity-50 transition-all active:scale-95 shadow-none"
               >
                 {isSavingToDrive ? <Loader2 className="w-4 h-4 animate-spin" /> : <Cloud className="w-4 h-4" />}
-                <span className="hidden sm:inline">{isSavingToDrive ? 'MENYIMPAN...' : 'SIMPAN KE DRIVE'}</span>
+                <span className="hidden sm:inline">{isSavingToDrive ? 'PROSES...' : 'DRIVE'}</span>
               </button>
             </>
           )}
@@ -541,10 +564,10 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
              )}
              <div className="space-y-0.5">
                <p className={`text-sm font-black ${driveLink ? 'text-emerald-900' : 'text-red-900'} uppercase tracking-tight`}>
-                 {driveLink ? 'Tersimpan di Google Docs' : 'Gagal Menyimpan'}
+                 {driveLink ? 'Tersimpan di Google Drive' : 'Gagal Menyimpan'}
                </p>
                <p className={`text-[11px] font-medium ${driveLink ? 'text-emerald-600/80' : 'text-red-600/80'}`}>
-                 {driveLink ? 'Notulensi Anda telah berhasil diunggah ke Google Drive sebagai dokumen PDF.' : driveError}
+                 {driveLink ? 'Notulensi berhasil diunggah sebagai file PDF ke Google Drive.' : driveError}
                </p>
              </div>
           </div>
@@ -578,10 +601,10 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
       </div>
 
       {/* Document View */}
-      <div className={`flex justify-center ${isFullWidth ? 'max-w-5xl mx-auto pb-12' : 'flex-1 min-h-0 overflow-y-auto custom-scrollbar pt-4'} ${isEditing ? '!max-w-full !mx-0 !pb-0 h-full' : ''}`}>
+      <div className={`flex justify-center ${isFullWidth ? 'max-w-5xl mx-auto pb-12' : 'flex-1 min-h-0 overflow-y-auto custom-scrollbar pt-4'} ${isEditing ? '!max-w-full !mx-0 !pb-0 h-full' : ''} print:block print:max-w-none print:w-full print:mx-0 print:p-0 print:overflow-visible`}>
         <div 
           id="markdown-content"
-          className={`bg-white shadow-xl w-full ${isEditing ? '!p-0 !shadow-none h-full flex flex-col' : 'p-[1.5cm] sm:p-[2.5cm]'}`}
+          className={`bg-white shadow-xl w-full ${isEditing ? '!p-0 !shadow-none h-full flex flex-col' : 'p-[1.5cm] sm:p-[2.5cm] print:shadow-none print:p-0'}`}
           style={{ 
             fontFamily: '"Plus Jakarta Sans", sans-serif',
             minHeight: isEditing ? 'auto' : '297mm',

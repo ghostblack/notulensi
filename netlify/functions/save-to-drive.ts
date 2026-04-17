@@ -83,19 +83,22 @@ export const handler: Handler = async (event) => {
     // 4. Convert Base64 to Buffer
     const buffer = Buffer.from(fileContent.split(',')[1] || fileContent, 'base64');
 
-    // 5. Create the File (converted to Google Doc if it's docx)
+    // 5. Create the File as NATIVE format (TANPA konversi ke Google Docs/Sheets!)
+    // Ini memastikan file tetap dalam format aslinya (DOCX/PDF) sehingga bisa di-download langsung.
     const isDocx = fileType === 'docx';
     
+    const uploadMimeType = isDocx 
+      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' 
+      : 'application/pdf';
+
     const fileMetadata = {
-      name: isDocx ? `Notulensi - ${title}` : `Notulensi - ${title}.pdf`,
-      mimeType: isDocx ? 'application/vnd.google-apps.document' : 'application/pdf',
+      name: `Notulensi - ${title}${isDocx ? '.docx' : '.pdf'}`,
+      // TIDAK menggunakan Google Docs mimeType agar file TIDAK dikonversi
       parents: [finalFolderId],
     };
 
     const media = {
-      mimeType: isDocx 
-        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' 
-        : 'application/pdf',
+      mimeType: uploadMimeType,
       body: Readable.from(buffer),
     };
 

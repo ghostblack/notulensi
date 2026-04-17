@@ -127,3 +127,10 @@ body {
 
 .fade-in { animation-name: fade-in; }
 .slide-in-from-bottom-6 { animation-name: slide-in-from-bottom; }
+
+/* ===== PRINT STYLES (Fallback untuk Ctrl+P) ===== */
+@media print {
+  .no-print, nav, aside, header, footer, button { display: none !important; }
+  body { background: white !important; }
+}
+

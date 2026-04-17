@@ -185,6 +185,11 @@ const App: React.FC = () => {
         setCurrentMeetingId(mId);
         setMeetingContext({ ...data, meetingId: mId }); 
         
+        // Simpan transkrip mentah (raw transcript) ke database!
+        // Ini SANGAT PENTING agar user bisa klik tombol "Perbaiki Format" (Regenerate) 
+        // nantinya TANPA perlu potong-potong audio lagi!
+        await saveTranscriptChunk(mId, transcript);
+        
         // Save as draft immediately
         await saveMeetingDraft(mId, finalResult);
       }
