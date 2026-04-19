@@ -12,8 +12,9 @@ import HistoryList from '@/components/HistoryList';
 import ConfirmationModal from '@/components/ConfirmationModal';
 import { AppStatus, MeetingHistoryItem, MeetingContext } from '@/types';
 import { transcribeAudioChunk, generateFinalMinutesFromText, transcribeFullAudio } from '@/services/geminiService';
-import { auth, logOut, subscribeToHistory, initializeMeeting, saveTranscriptChunk, saveMeetingDraft, finalizeMeeting, onAuthStateChanged, type User } from '@/services/firebase';
+import { auth, logOut, subscribeToHistory, initializeMeeting, saveTranscriptChunk, saveMeetingDraft, finalizeMeeting, onAuthStateChanged, type User, getUserSignature } from '@/services/firebase';
 import { Loader2, Plus, AlertTriangle, Activity, FileCheck, Users, ArrowRight, CheckCircle2, MessageSquare, History as HistoryIcon, ClipboardList, Mic } from 'lucide-react';
+import UserProfileModal from '@/components/UserProfileModal';
 
 const SESSION_KEY = 'pending_meeting_session_kpu';
 
@@ -34,6 +35,10 @@ const App: React.FC = () => {
   const [showHistory, setShowHistory] = useState(true);
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<{ type: 'tab' | 'reset', value?: string } | null>(null);
+
+  // User Profile
+  const [userSignature, setUserSignature] = useState<string | null>(null);
+  const [showProfileModal, setShowProfileModal] = useState(false);
 
   const processingQueue = useRef<Promise<void>>(Promise.resolve());
   const activeTasksCount = useRef(0);
@@ -63,8 +68,17 @@ const App: React.FC = () => {
   }, [isRecordingInProgress]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser as User | null);
+      
+      if (currentUser) {
+        // Ambil signature user (Jika sudah diatur admin atau profil sendiri)
+        const sig = await getUserSignature(currentUser.uid);
+        setUserSignature(sig);
+      } else {
+        setUserSignature(null);
+      }
+      
       setAuthLoading(false);
     });
     return () => unsubscribe();
@@ -160,7 +174,10 @@ const App: React.FC = () => {
     try {
       let transcript = "";
       if (data.inputMode === 'upload' && data.audioFile) {
-        transcript = await transcribeFullAudio(data.audioFile, data);
+        transcript = await transcribeFullAudio(data.audioFile, data, (progress) => {
+          // Progress chunks dari 0% ke 100% dipetakan ke 15% ke 60% dalam skala FinalizationProgress
+          setFinalizationProgress(15 + Math.round(progress * 0.45));
+        });
       }
 
       if (!transcript) throw new Error("Tidak ada data pembicaraan yang ditemukan.");
@@ -254,18 +271,19 @@ const App: React.FC = () => {
     }
   };
 
-  const handlePhotosComplete = async (photos: File[]) => {
+  const handlePhotosComplete = async (photoIds: string[]) => {
     if (!currentMeetingId || !minutes || !meetingContext) return;
     
     try {
       let finalMinutes = minutes;
-      if (photos.length > 1 && !minutes.includes('[DOKUMENTASI_FOTO_DI_SINI]')) {
+      if (photoIds.length > 0 && !minutes.includes('[DOKUMENTASI_FOTO_DI_SINI]')) {
         finalMinutes = minutes + "\n\n[DOKUMENTASI_FOTO_DI_SINI]";
       }
       
       setMinutes(finalMinutes);
-      setMeetingContext({ ...meetingContext, documentationPhotos: photos });
-      await finalizeMeeting(currentMeetingId, finalMinutes);
+      // Simpan photoIds ke context agar MinutesDisplay bisa pull dari Drive via dependensi
+      setMeetingContext(prev => prev ? { ...prev, photoUrls: photoIds } : null);
+      await finalizeMeeting(currentMeetingId, finalMinutes, photoIds);
       setStatus(AppStatus.COMPLETED);
     } catch (e: any) {
       setError(e.message);
@@ -573,6 +591,8 @@ const App: React.FC = () => {
           {status === AppStatus.PHOTO_UPLOAD && (
             <PhotoUpload 
               meetingTitle={meetingContext?.title} 
+              meetingDate={meetingContext?.date}
+              meetingSubBagian={meetingContext?.subBagian}
               onComplete={handlePhotosComplete} 
               onCancel={handleReset} 
             />
@@ -589,6 +609,8 @@ const App: React.FC = () => {
                 meetingTitle={meetingContext?.title}
                 meetingDate={meetingContext?.date}
                 meetingSubBagian={meetingContext?.subBagian}
+                userDisplayName={user?.displayName}
+                userSignature={userSignature}
               />
             </div>
           )}
@@ -622,6 +644,16 @@ const App: React.FC = () => {
         confirmText="YA, BATALKAN"
         variant="danger"
       />
+
+      {/* User Profile Modal */}
+      {showProfileModal && user && (
+        <UserProfileModal 
+          user={user as any}
+          currentSignature={userSignature}
+          onClose={() => setShowProfileModal(false)}
+          onSaved={(sig) => setUserSignature(sig)}
+        />
+      )}
     </div>
   );
 };

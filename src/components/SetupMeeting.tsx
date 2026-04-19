@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Calendar, Type, Upload, FileText, ArrowRight, X, AlertCircle, Mic, Music, Users, Component, Tag, Plus, Search, MapPin, Clock } from 'lucide-react';
 import { MeetingContext, InputMode } from '@/types';
-import { subscribeToSubBagians, subscribeToCategories, subscribeToParticipants } from '@/services/firebase';
+import { getSubBagians, getCategories, getParticipants } from '@/services/firebase';
 
 interface SetupMeetingProps {
   onNext: (data: MeetingContext) => void;
@@ -47,12 +47,26 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
   const audioFileInputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Load Firestore data
+  // Load Firestore data — pakai getDocs (baca sekali) bukan onSnapshot (real-time)
+  // karena data sub-bagian/kategori/peserta tidak berubah saat user ngisi form
   useEffect(() => {
-    const u1 = subscribeToSubBagians(data => { setSubBagianList(data as any); setLoadingSB(false); });
-    const u2 = subscribeToCategories(data => setCategories(data as any));
-    const u3 = subscribeToParticipants(data => setGlobalParticipants(data as any));
-    return () => { u1(); u2(); u3(); };
+    const loadFormData = async () => {
+      setLoadingSB(true);
+      try {
+        // Jalankan 3 fetch paralel sekaligus — lebih cepat dari satu per satu
+        const [sbData, catData, partData] = await Promise.all([
+          getSubBagians(),
+          getCategories(),
+          getParticipants(),
+        ]);
+        setSubBagianList(sbData);
+        setCategories(catData);
+        setGlobalParticipants(partData);
+      } finally {
+        setLoadingSB(false);
+      }
+    };
+    loadFormData();
   }, []);
 
   // Close dropdown on outside click

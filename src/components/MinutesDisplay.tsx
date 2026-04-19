@@ -15,17 +15,20 @@ interface MinutesDisplayProps {
   meetingTitle?: string;
   meetingDate?: string;
   meetingSubBagian?: string;
+  userDisplayName?: string | null;
+  userSignature?: string | null;
 }
 
-const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationPhotos, photoUrls: initialPhotoUrls, onReset, onSave, meetingTitle, meetingDate, meetingSubBagian }) => {
+const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationPhotos, photoUrls: initialPhotoUrls, onReset, onSave, meetingTitle, meetingDate, meetingSubBagian, userDisplayName, userSignature }) => {
   const [copied, setCopied] = useState(false);
-  const [isFullWidth, setIsFullWidth] = useState(false);
+  const [isFullWidth, setIsFullWidth] = useState(true);
 
   const [isEditing, setIsEditing] = useState(false);
   const [editableContent, setEditableContent] = useState(content);
   const [isSaving, setIsSaving] = useState(false);
   const [photoUrls, setPhotoUrls] = useState<string[]>([]);
   const [photoBase64s, setPhotoBase64s] = useState<string[]>([]);
+  const [isLoadingPhotos, setIsLoadingPhotos] = useState(false);
   const [logoBase64, setLogoBase64] = useState<string | null>(null);
   
   // Google Drive states
@@ -34,7 +37,13 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
   const [driveError, setDriveError] = useState<string | null>(null);
 
   React.useEffect(() => {
-    setEditableContent(content);
+    let finalContent = content;
+    // Paksa pastikan ada placeholder supaya blok TTD dan Foto selalu dirender
+    // meskipun untuk riwayat notulensi lama yang tadinya belum memiliki placeholder ini.
+    if (!finalContent.includes('[DOKUMENTASI_FOTO_DI_SINI]')) {
+      finalContent += '\n\n[DOKUMENTASI_FOTO_DI_SINI]';
+    }
+    setEditableContent(finalContent);
   }, [content]);
 
   const compressImageToBase64DataUri = async (file: File): Promise<string> => {
@@ -105,12 +114,45 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
 
       return () => urls.forEach(url => URL.revokeObjectURL(url));
     } else if (initialPhotoUrls && initialPhotoUrls.length > 0) {
-      // Construct direct embed URLs from Drive IDs for preview
-      const urls = initialPhotoUrls.map(id => `https://drive.google.com/thumbnail?id=${id}&sz=w1000`);
+      console.log(`[Photos] Ditemukan ${initialPhotoUrls.length} Drive ID:`, initialPhotoUrls);
+      // Gunakan uc?id= supaya gambar bereaksi normal kalau proxy lokal gagal
+      const urls = initialPhotoUrls.map(id => `https://drive.google.com/uc?id=${id}`);
       setPhotoUrls(urls);
-      // Can't convert Drive photos to base64 client-side due to CORS; leave photoBase64s empty
-      setPhotoBase64s([]);
+
+      // Fetch base64 via proxy untuk kebutuhan export PDF/DOCX (CORS bypass)
+      // Gunakan loop berurutan agar localhost Netlify tidak timeout / ETIMEDOUT karena concurrent lambdas.
+      const fetchBase64sFromDrive = async () => {
+        setIsLoadingPhotos(true);
+        console.log('[Photos] Mulai ambil dari Drive via proxy...');
+        const base64List: string[] = [];
+        
+        for (const id of initialPhotoUrls) {
+          try {
+            const res = await fetch(`/.netlify/functions/proxy-photo?id=${id}`);
+            if (!res.ok) {
+              console.warn(`[Photos] Proxy gagal ${id}: HTTP ${res.status}`);
+              continue; // Abaikan biar fetch lanjut ke gambar berikutnya
+            }
+            const data = await res.json();
+            if (data.base64) {
+              base64List.push(`data:image/jpeg;base64,${data.base64}`);
+            }
+          } catch (err) {
+            console.error(`[Photos] Error ${id}:`, err);
+          }
+        }
+        const filtered = base64List.filter(b => b.length > 0);
+        console.log(`[Photos] Selesai: ${filtered.length}/${initialPhotoUrls.length} berhasil`);
+        setPhotoBase64s(filtered);
+        // Ganti URL thumbnail yang gagal (403 Forbidden) dengan Base64 bersih dari proxy
+        if (filtered.length > 0) {
+          setPhotoUrls(filtered);
+        }
+        setIsLoadingPhotos(false);
+      };
+      fetchBase64sFromDrive();
     } else {
+      console.log('[Photos] Tidak ada Drive IDs. initialPhotoUrls =', initialPhotoUrls);
       setPhotoUrls([]);
       setPhotoBase64s([]);
     }
@@ -118,15 +160,41 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
   }, [documentationPhotos, initialPhotoUrls]);
 
   const KPU_LOGO_URL = "https://ik.imagekit.io/gambarid/file%20kpu/KPU_Logo.svg.png?updatedAt=1768041033309";
+  const LOGO_CACHE_KEY = 'kpu_logo_b64';
+  const LOGO_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 hari dalam milidetik
 
   React.useEffect(() => {
-    // Pre-load logo as Base64 to avoid CORS issues during capture
+    // Pre-load logo as Base64 — cek localStorage dulu sebelum ke CDN
     const loadLogo = async () => {
       try {
+        // Coba ambil dari cache localStorage
+        const cached = localStorage.getItem(LOGO_CACHE_KEY);
+        const cachedAt = localStorage.getItem(`${LOGO_CACHE_KEY}_ts`);
+
+        if (cached && cachedAt) {
+          const age = Date.now() - parseInt(cachedAt, 10);
+          if (age < LOGO_CACHE_TTL) {
+            // Cache masih valid — pakai langsung, tidak perlu fetch!
+            setLogoBase64(cached);
+            return;
+          }
+        }
+
+        // Cache tidak ada atau sudah kadaluarsa — fetch dari CDN
         const response = await fetch(KPU_LOGO_URL);
         const blob = await response.blob();
         const reader = new FileReader();
-        reader.onloadend = () => setLogoBase64(reader.result as string);
+        reader.onloadend = () => {
+          const result = reader.result as string;
+          setLogoBase64(result);
+          // Simpan ke localStorage beserta timestamp
+          try {
+            localStorage.setItem(LOGO_CACHE_KEY, result);
+            localStorage.setItem(`${LOGO_CACHE_KEY}_ts`, Date.now().toString());
+          } catch {
+            // localStorage penuh — abaikan, tetap tampil dari memory
+          }
+        };
         reader.readAsDataURL(blob);
       } catch (err) {
         console.error("Failed to load logo as base64:", err);
@@ -210,11 +278,28 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
     // Simple line-by-line markdown parser for docx
     const lines = markdown.split('\n');
     const htmlLines: string[] = [];
+    // State untuk metadata table (Hari/Pukul/Tempat)
+    let inMetaTable = false;
+    const metaRows: string[] = [];
+    const FONT = "'Bookman Old Style',Georgia,serif";
+
+    // State untuk list
     let inList = false;
     let listType: 'ul' | 'ol' | null = null;
     let listCounter = 0;
 
+    const closeMetaTable = () => {
+      if (metaRows.length > 0) {
+        htmlLines.push(`<table style="border-collapse:collapse;width:auto;margin-bottom:8pt;border:none;">`);
+        htmlLines.push(...metaRows);
+        htmlLines.push(`</table>`);
+        metaRows.length = 0;
+        inMetaTable = false;
+      }
+    };
+
     const closeList = () => {
+      closeMetaTable();
       if (inList && listType) {
         htmlLines.push(listType === 'ul' ? '</ul>' : '</ol>');
         inList = false;
@@ -233,7 +318,35 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      
+
+      // ── Metadata lines: **Label** : Value ──
+      // Handle SATU BARIS dengan banyak field (Gemini kadang output semua di 1 baris)
+      // Pattern: **Hari, tanggal** : Senin ... **Pukul** : 10.00 **Tempat** : Kantor...
+      const allMetaOnLine = [...line.matchAll(/\*\*([^*]{1,35})\*\*\s*:\s*([^*]+?)(?=\s+\*\*[^*]{1,35}\*\*\s*:|$)/g)];
+      if (allMetaOnLine.length > 0) {
+        const firstLabel = allMetaOnLine[0][1].trim();
+        const firstLabelWords = firstLabel.split(/\s+/).length;
+        if (firstLabelWords <= 4) {
+          closeList();
+          for (const m of allMetaOnLine) {
+            const label = m[1].trim();
+            const value = m[2].trim();
+            metaRows.push(
+              `<tr style="line-height:1.5;">` +
+              `<td style="font-family:${FONT};font-size:11pt;padding:0 0 1pt 0;vertical-align:top;white-space:nowrap;min-width:90pt;">${label}</td>` +
+              `<td style="font-family:${FONT};font-size:11pt;padding:0 8pt 1pt 8pt;vertical-align:top;">:</td>` +
+              `<td style="font-family:${FONT};font-size:11pt;padding:0 0 1pt 0;vertical-align:top;text-align:justify;">${inlineFormat(value)}</td>` +
+              `</tr>`
+            );
+          }
+          inMetaTable = true;
+          continue;
+        }
+      }
+      // Bukan meta — flush tabel jika ada
+      closeMetaTable();
+
+
       // Logo image
       if (/^!\[Logo KPU\]/.test(line)) {
         closeList();
@@ -282,46 +395,64 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
       }
 
       // Headings
-      if (/^# /.test(line)) { closeList(); htmlLines.push(`<h1 style="text-align:center;font-size:14pt;font-weight:bold;text-transform:uppercase;margin-top:0;margin-bottom:12pt;line-height:1.5;font-family:'Bookman Old Style',Georgia,serif;">${inlineFormat(line.replace(/^# /, ''))}</h1>`); continue; }
-      if (/^## /.test(line)) { closeList(); htmlLines.push(`<h2 style="text-align:center;font-size:12pt;font-weight:bold;text-transform:uppercase;margin-top:0;margin-bottom:10pt;line-height:1.5;font-family:'Bookman Old Style',Georgia,serif;">${inlineFormat(line.replace(/^## /, ''))}</h2>`); continue; }
-      if (/^### /.test(line)) { closeList(); htmlLines.push(`<h3 style="text-align:center;font-size:11pt;font-weight:bold;text-transform:uppercase;border-bottom:1pt solid black;padding-bottom:10pt;margin-top:0;margin-bottom:18pt;line-height:1.5;font-family:'Bookman Old Style',Georgia,serif;">${inlineFormat(line.replace(/^### /, ''))}</h3>`); continue; }
+      if (/^# /.test(line))  { closeList(); htmlLines.push(`<h1 style="text-align:center;font-size:14pt;font-weight:bold;text-transform:uppercase;margin-top:2pt;margin-bottom:4pt;line-height:1.5;font-family:'Bookman Old Style',Georgia,serif;">${inlineFormat(line.replace(/^# /, ''))}</h1>`); continue; }
+      if (/^## /.test(line)) { closeList(); htmlLines.push(`<h2 style="text-align:center;font-size:12pt;font-weight:bold;text-transform:uppercase;margin-top:2pt;margin-bottom:8pt;line-height:1.5;font-family:'Bookman Old Style',Georgia,serif;">${inlineFormat(line.replace(/^## /, ''))}</h2>`); continue; }
+      if (/^### /.test(line)) { closeList(); htmlLines.push(`<h3 style="text-align:left;font-size:11pt;font-weight:bold;text-transform:uppercase;margin-top:10pt;margin-bottom:4pt;line-height:1.5;font-family:'Bookman Old Style',Georgia,serif;">${inlineFormat(line.replace(/^### /, ''))}</h3>`); continue; }
 
       // Horizontal rule
       if (/^---+$/.test(line.trim())) { closeList(); htmlLines.push('<hr/>'); continue; }
 
       // Photo placeholder - embed using base64 data URIs
+      // Dan inject TTD Notulis sebelum dokumentasi foto
       if (/\[DOKUMENTASI_FOTO_DI_SINI\]/i.test(line)) {
         closeList();
+
+        htmlLines.push(`
+          <table style="width:100%; border-collapse:collapse; margin-top:30pt; margin-bottom: 20pt; border:none; page-break-inside:avoid;">
+            <tr>
+              <td style="width:60%; border:none;"></td>
+              <td style="width:40%; text-align:center; font-family:'Bookman Old Style',Georgia,serif; font-size:11pt; border:none; line-height:1.5;">
+                <p style="margin:0; font-weight:bold;">NOTULIS,</p>
+                
+                ${userSignature 
+                  ? `<img src="${userSignature}" style="max-height: 80px; max-width: 150px; margin: 10px auto; display: block;" alt="TTD Notulis" />` 
+                  : `<br/><br/><br/><br/>`
+                }
+                
+                <p style="margin:0; font-weight:bold;">${userDisplayName ? userDisplayName.toUpperCase() : 'NOTULIS Rapat'}</p>
+              </td>
+            </tr>
+          </table>
+        `);
+
         const photos = exportPhotoBase64s.filter(b => b);
         if (photos.length > 0) {
-          htmlLines.push('<div style="margin-top:20pt; page-break-inside: avoid;"><h3 style="text-align:center;font-size:12pt;font-weight:bold;">DOKUMENTASI FOTO</h3>');
-          htmlLines.push('<table style="width:100%; border-collapse: collapse; margin-top: 10pt; border: none;">');
+          // Ukuran foto tetap: 16:9 landscape hp standar
+          const IMG_W = 280;
+          const IMG_H = 158; // 16:9 landscape
+          htmlLines.push('<div style="margin-top:16pt; page-break-inside: avoid;"><h3 style="text-align:center;font-size:11pt;font-weight:bold;font-family:\'Bookman Old Style\',Georgia,serif;">DOKUMENTASI FOTO</h3>');
+          htmlLines.push('<table style="width:100%; border-collapse: collapse; margin-top: 8pt; border: none;">');
           const maxPhotos = Math.min(photos.length, 4);
           for (let row = 0; row < Math.ceil(maxPhotos / 2); row++) {
             htmlLines.push('<tr>');
             for (let col = 0; col < 2; col++) {
               const p = row * 2 + col;
               if (p < maxPhotos) {
-                const imgSrc = photos[p];
-                // Images are pre-cropped nicely to 4:3! A4 50% max width is ~280px.
-                const tWidth = 280;
-                const tHeight = 210;
                 htmlLines.push(`
-                  <td style="width:50%; text-align:center; vertical-align:top; padding: 10pt; border: none;">
-                    <img src="${imgSrc}" alt="Foto ${p+1}" width="${tWidth}" height="${tHeight}" style="display:block;margin:0 auto;width:${tWidth}px;height:${tHeight}px;border-radius:8px;"/>
-                    <p style="text-align:center;font-size:9pt;margin-top:4pt;color:#1a1a1a;">Foto Dokumentasi ${p+1}</p>
+                  <td style="width:50%; text-align:center; vertical-align:top; padding: 6pt; border: none;">
+                    <img src="${photos[p]}" alt="Foto ${p+1}" width="${IMG_W}" height="${IMG_H}" style="display:block;margin:0 auto;width:${IMG_W}px;height:${IMG_H}px;object-fit:cover;border-radius:4px;"/>
+                    <p style="text-align:center;font-size:9pt;margin-top:3pt;color:#1a1a1a;font-family:'Bookman Old Style',Georgia,serif;">Foto ${p+1}</p>
                   </td>
                 `);
               } else {
-                htmlLines.push('<td style="width:50%; padding: 10pt; border: none;"></td>');
+                htmlLines.push('<td style="width:50%; padding: 6pt; border: none;"></td>');
               }
             }
             htmlLines.push('</tr>');
           }
           htmlLines.push('</table></div>');
         } else if (photoUrls.length > 0) {
-          // Fallback: show note that photos are in Drive
-          htmlLines.push('<div style="margin-top:20pt;border:1pt solid #ccc;padding:10pt;text-align:center;"><p style="font-size:10pt;color:#666;">Dokumentasi foto tersedia di folder Google Drive yang sama dengan dokumen ini.</p></div>');
+          htmlLines.push('<div style="margin-top:16pt;border:1pt solid #ccc;padding:8pt;text-align:center;"><p style="font-size:10pt;color:#666;font-family:\'Bookman Old Style\',Georgia,serif;">Dokumentasi foto tersedia di folder Google Drive yang sama.</p></div>');
         }
         continue;
       }
@@ -329,40 +460,41 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
       // Unordered list
       const ulMatch = line.match(/^\s*[-*+] (.+)/);
       if (ulMatch) {
-        if (!inList || listType !== 'ul') { closeList(); htmlLines.push('<ul style="margin-bottom:8pt; padding-left: 20pt;">'); inList = true; listType = 'ul'; }
-        htmlLines.push(`<li style="text-align:justify; line-height:1.5; margin-bottom:4pt;">${inlineFormat(ulMatch[1])}</li>`);
+        if (!inList || listType !== 'ul') { closeList(); htmlLines.push('<ul style="margin-top:2pt;margin-bottom:4pt; padding-left: 20pt;">'); inList = true; listType = 'ul'; }
+        htmlLines.push(`<li style="text-align:justify; line-height:1.5; margin-bottom:2pt;">${inlineFormat(ulMatch[1])}</li>`);
         continue;
       }
 
       // Ordered list
       const olMatch = line.match(/^\s*\d+\.\s+(.+)/);
       if (olMatch) {
-        if (!inList || listType !== 'ol') { closeList(); htmlLines.push('<ol style="margin-bottom:8pt; padding-left: 20pt;">'); inList = true; listType = 'ol'; listCounter = 0; }
+        if (!inList || listType !== 'ol') { closeList(); htmlLines.push('<ol style="margin-top:2pt;margin-bottom:4pt; padding-left: 20pt;">'); inList = true; listType = 'ol'; listCounter = 0; }
         listCounter++;
-        htmlLines.push(`<li style="text-align:justify; line-height:1.5; margin-bottom:4pt;">${inlineFormat(olMatch[1])}</li>`);
+        htmlLines.push(`<li style="text-align:justify; line-height:1.5; margin-bottom:2pt;">${inlineFormat(olMatch[1])}</li>`);
         continue;
       }
 
       // Empty line
       if (line.trim() === '') {
         closeList();
-        htmlLines.push('<p style="margin:0;line-height:0.5em;">&nbsp;</p>');
+        htmlLines.push('<p style="margin:0;line-height:0.3em;">&nbsp;</p>');
         continue;
       }
 
       // Regular paragraph
       closeList();
-      htmlLines.push(`<p style="text-align:justify;line-height:1.5;margin-bottom:6pt;font-size:11pt;font-family:'Bookman Old Style',Georgia,serif;">${inlineFormat(line)}</p>`);
+      htmlLines.push(`<p style="text-align:justify;line-height:1.5;margin-top:0;margin-bottom:2pt;font-size:11pt;font-family:'Bookman Old Style',Georgia,serif;">${inlineFormat(line)}</p>`);
     }
     closeList();
 
     return `<!DOCTYPE html><html lang="id"><head><meta charset="utf-8"><style>
-      @page { size: A4 portrait; margin: 2cm 1.5cm; }
-      body { font-family: 'Bookman Old Style', Georgia, 'Times New Roman', serif; font-size: 11pt; line-height: 1.5; margin: 0; padding: 20px 30px; box-sizing: border-box; color: #1a1a1a; }
-      h1,h2,h3 { color: #000; font-family: 'Bookman Old Style', Georgia, 'Times New Roman', serif; }
+      @page { size: A4 portrait; margin: 2cm 2cm; }
+      body { font-family: 'Bookman Old Style', Georgia, serif; font-size: 11pt; line-height: 1.5; margin: 0; padding: 0; box-sizing: border-box; color: #000; width: 100%; }
+      h1,h2,h3 { color: #000; font-family: 'Bookman Old Style', Georgia, serif; margin: 0; }
       strong { font-weight: bold; }
-      ul, ol { padding-left: 1.5em; font-size: 11pt; line-height: 1.5; }
-      li { line-height: 1.5; margin-bottom: 4pt; }
+      ul, ol { padding-left: 1.5em; font-size: 11pt; line-height: 1.5; margin: 2pt 0; }
+      li { line-height: 1.5; margin-bottom: 2pt; }
+      p { margin: 0 0 2pt 0; }
       img { max-width: 100%; }
       h1,h2,h3 { page-break-after: avoid; break-after: avoid; }
       p,li,tr,img { page-break-inside: avoid; break-inside: avoid; }
@@ -421,10 +553,12 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
       const htmlContent = await markdownToHtml(currentContent, photoBase64s);
 
       // Convert HTML → PDF blob
+      // windowWidth: 643px = usable content area A4 dengan margin 20mm tiap sisi
+      // = (210mm - 40mm) / 25.4 * 96dpi = tepat 1:1 tanpa scaling error
       const pdfBlob = await html2pdf().set({
-        margin: [20, 15, 20, 15],
-        image: { type: 'jpeg', quality: 0.85 },
-        html2canvas: { scale: 1.5, useCORS: true, windowWidth: 602 },
+        margin: [20, 20, 20, 20], // mm — 2cm tiap sisi, konsisten dengan @page
+        image: { type: 'jpeg', quality: 0.9 },
+        html2canvas: { scale: 2, useCORS: true, windowWidth: 643 },
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait', compress: true },
         pagebreak: { mode: ['css', 'legacy'], avoid: ['p', 'li', 'h1', 'h2', 'h3', 'img'] }
       }).from(htmlContent).output('blob');
@@ -530,7 +664,8 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
 
               <button 
                 onClick={handleDownloadWord}
-                className="inline-flex items-center gap-1.5 px-3 h-10 sm:h-9 text-xs font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded-xl sm:rounded-lg hover:bg-blue-100 transition-all active:scale-95 shadow-none"
+                disabled={isLoadingPhotos}
+                className="inline-flex items-center gap-1.5 px-3 h-10 sm:h-9 text-xs font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded-xl sm:rounded-lg hover:bg-blue-100 transition-all active:scale-95 shadow-none disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <FileText className="w-4 h-4" />
                 <span className="hidden sm:inline">WORD</span>
@@ -538,8 +673,8 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
               
               <button 
                 onClick={handleSaveToDrive} 
-                disabled={isSavingToDrive}
-                className="inline-flex items-center gap-1.5 px-3 h-10 sm:h-9 text-xs font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-xl sm:rounded-lg hover:bg-emerald-100 disabled:opacity-50 transition-all active:scale-95 shadow-none"
+                disabled={isSavingToDrive || isLoadingPhotos}
+                className="inline-flex items-center gap-1.5 px-3 h-10 sm:h-9 text-xs font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-xl sm:rounded-lg hover:bg-emerald-100 disabled:opacity-50 transition-all active:scale-95 shadow-none disabled:cursor-not-allowed"
               >
                 {isSavingToDrive ? <Loader2 className="w-4 h-4 animate-spin" /> : <Cloud className="w-4 h-4" />}
                 <span className="hidden sm:inline">{isSavingToDrive ? 'PROSES...' : 'DRIVE'}</span>
@@ -585,10 +720,19 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
             )}
             <button 
               onClick={handleDownloadWord}
-              className="flex items-center gap-2 px-5 py-2.5 bg-slate-100 text-slate-700 text-[11px] font-black rounded-xl hover:bg-slate-200 transition-all uppercase tracking-wider shadow-sm active:scale-95 border border-slate-200"
+              disabled={isLoadingPhotos}
+              className="flex items-center gap-2 px-5 py-2.5 bg-slate-100 text-slate-700 text-[11px] font-black rounded-xl hover:bg-slate-200 transition-all uppercase tracking-wider shadow-sm active:scale-95 border border-slate-200 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <FileText className="w-4 h-4 text-blue-600" />
               <span>Unduh Word</span>
+            </button>
+            <button 
+              onClick={handleDownloadPdf}
+              disabled={isLoadingPhotos}
+              className="flex items-center gap-2 px-5 py-2.5 bg-slate-100 text-slate-700 text-[11px] font-black rounded-xl hover:bg-slate-200 transition-all uppercase tracking-wider shadow-sm active:scale-95 border border-slate-200 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <FileText className="w-4 h-4 text-red-600" />
+              <span>Unduh PDF</span>
             </button>
             <button 
               onClick={() => { setDriveLink(null); setDriveError(null); }} 
@@ -636,15 +780,40 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
 
                         if (isPlaceholder) {
                           const limitedPhotos = photoUrls.slice(0, 4);
-                          const isMissingPhotosForExport = limitedPhotos.length === 0 || photoBase64s.length === 0;
+                          // Foto benar-benar hilang HANYA jika: tidak ada Drive IDs dan tidak ada local URLs
+                          const hasDriveIds = initialPhotoUrls && initialPhotoUrls.length > 0;
+                          const hasLocalUrls = limitedPhotos.length > 0;
+                          const isMissingPhotosForExport = !hasDriveIds && !hasLocalUrls;
 
                           return (
                             <div className="mt-8 pt-6 border-t border-slate-200 placeholder-container page-break-avoid" key="documentation-gallery">
-                              {isMissingPhotosForExport && (
+                              {/* Inject TTD ke DOM secara langsung sebelum blok foto */}
+                              <div style={{ width: '100%', display: 'flex', justifyContent: 'flex-end', marginBottom: '30px' }}>
+                                <div style={{ width: '40%', textAlign: 'center', fontFamily: '"Bookman Old Style", Georgia, serif', fontSize: '11pt', lineHeight: 1.5 }}>
+                                  <p style={{ margin: 0, fontWeight: 'bold' }}>NOTULIS,</p>
+                                  {userSignature ? (
+                                    <img src={userSignature} style={{ maxHeight: '80px', maxWidth: '150px', margin: '10px auto', display: 'block' }} alt="TTD Notulis" />
+                                  ) : (
+                                    <div style={{ height: '80px', margin: '10px auto' }}></div>
+                                  )}
+                                  <p style={{ margin: 0, fontWeight: 'bold' }}>{userDisplayName ? userDisplayName.toUpperCase() : 'NOTULIS RAPAT'}</p>
+                                </div>
+                              </div>
+
+                              {/* Loading indicator — saat sedang tarik foto dari Drive */}
+                              {isLoadingPhotos && (
+                                <div className="flex items-center justify-center gap-3 p-5 bg-sky-50 border border-sky-200 rounded-xl mb-4 no-print">
+                                  <div className="w-4 h-4 border-2 border-sky-400 border-t-transparent rounded-full animate-spin" />
+                                  <p className="text-sky-700 text-sm font-medium">Menarik foto dokumentasi dari Google Drive...</p>
+                                </div>
+                              )}
+                              
+                              {/* Inject UI — hanya muncul kalau memang tidak ada foto sama sekali */}
+                              {isMissingPhotosForExport && !isLoadingPhotos && (
                                <div className="flex flex-col mb-6 items-center justify-center p-5 bg-amber-50 border border-amber-200 rounded-xl no-print">
                                   <p className="text-amber-900 text-[11pt] text-center mb-3 max-w-lg leading-relaxed">
-                                    <strong>Dokumentasi Foto Kosong / Link Riwayat Terputus.</strong><br/>
-                                    Jika notulensi ini dari Riwayat, fitur pengarsipan Google otomatis memutuskan link foto. Silakan unggah sisipkan ulang foto Anda disini agar ikut tercetak di PDF.
+                                    <strong>Dokumentasi Foto Kosong / Link Terputus.</strong><br/>
+                                    Pastikan foto benar-benar terpilih sebelum menekan Lanjut saat upload. Silakan unggah ulang foto Anda di sini agar ikut tercetak di PDF.
                                   </p>
                                   <label className="cursor-pointer bg-amber-500 text-white text-[10pt] font-bold py-2.5 px-5 rounded-xl hover:bg-amber-600 transition shadow-sm">
                                     SUNTIKKAN ULANG FOTO (MAKS 4)
@@ -652,7 +821,7 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
                                   </label>
                                </div>
                               )}
-                              {limitedPhotos.length > 0 && (
+                              {hasLocalUrls && (
                                 <div className="grid grid-cols-2 gap-6">
                                   {limitedPhotos.map((url, idx) => (
                                     <div 

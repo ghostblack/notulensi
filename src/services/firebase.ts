@@ -112,10 +112,11 @@ export const loginAsPetugas = async (email: string, password: string) => {
 export const createPetugasAccount = async (
   email: string,
   password: string,
-  displayName: string
+  displayName: string,
+  signatureBase64: string | null = null
 ): Promise<{ uid: string; email: string; displayName: string }> => {
   // Create secondary app to avoid signing out current admin
-  const { initializeApp: initSecondary } = await import("firebase/app");
+  const { initializeApp: initSecondary, deleteApp } = await import("firebase/app");
   const { getAuth: getSecondaryAuth, createUserWithEmailAndPassword: createUser, updateProfile: updProfile, signOut: secSignOut } = await import("firebase/auth");
   
   const secondaryApp = initSecondary(firebaseConfig, `secondary-${Date.now()}`);
@@ -131,13 +132,15 @@ export const createPetugasAccount = async (
       email,
       displayName,
       role: "petugas",
+      signatureBase64: signatureBase64 || null,
       createdAt: serverTimestamp(),
     });
 
     await secSignOut(secondaryAuth);
     return { uid: cred.user.uid, email, displayName };
   } finally {
-    // Secondary app will be GC'd
+    // Cleanup secondary app instance untuk mencegah memory leak
+    try { await deleteApp(secondaryApp); } catch { /* abaikan error cleanup */ }
   }
 };
 
@@ -163,6 +166,29 @@ export const subscribeToUsers = (callback: (data: any[]) => void) => {
 
 export const logOut = async () => {
   try { await signOut(auth); } catch (error) { console.error("Error signing out", error); }
+};
+
+export const saveUserSignature = async (uid: string, signatureBase64: string) => {
+  try {
+    const userRef = doc(db, "users", uid);
+    await setDoc(userRef, { signatureBase64 }, { merge: true });
+  } catch (error) {
+    console.error("Error saving user signature:", error);
+    throw error;
+  }
+};
+
+export const getUserSignature = async (uid: string): Promise<string | null> => {
+  try {
+    const userSnap = await getDoc(doc(db, "users", uid));
+    if (userSnap.exists() && userSnap.data().signatureBase64) {
+      return userSnap.data().signatureBase64;
+    }
+    return null;
+  } catch (error) {
+    console.error("Error getting user signature:", error);
+    return null;
+  }
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -275,6 +301,8 @@ export const deleteMeeting = async (meetingId: string) => {
 };
 
 export const subscribeToHistory = (userId: string, callback: (data: any[]) => void) => {
+  // Query sederhana tanpa orderBy — menghindari keharusan composite index Firestore.
+  // Sort dilakukan di client setelah data diterima.
   const q = query(collection(db, "meetings"), where("userId", "==", userId));
   return onSnapshot(q, 
     (snapshot) => {
@@ -343,6 +371,15 @@ export const subscribeToSubBagians = (callback: (data: any[]) => void) => {
   );
 };
 
+/** Baca sub-bagian sekali saja — untuk form yang tidak butuh real-time */
+export const getSubBagians = async (): Promise<any[]> => {
+  try {
+    const snap = await getDocs(collection(db, "subBagians"));
+    const data = snap.docs.map(d => ({ id: d.id, ...d.data(), createdAt: d.data().createdAt?.toDate() || new Date() })) as any[];
+    return data.sort((a, b) => (a.code as string).localeCompare(b.code as string));
+  } catch { return []; }
+};
+
 export const addSubBagian = async (code: string, name: string) => {
   return addDoc(collection(db, "subBagians"), { code, name, createdAt: serverTimestamp() });
 };
@@ -370,6 +407,15 @@ export const subscribeToParticipants = (callback: (data: any[]) => void) => {
   );
 };
 
+/** Baca peserta sekali saja — untuk form yang tidak butuh real-time */
+export const getParticipants = async (): Promise<any[]> => {
+  try {
+    const snap = await getDocs(collection(db, "participants"));
+    const data = snap.docs.map(d => ({ id: d.id, ...d.data(), createdAt: d.data().createdAt?.toDate() || new Date() })) as any[];
+    return data.sort((a, b) => (a.name as string).localeCompare(b.name as string));
+  } catch { return []; }
+};
+
 export const addParticipant = async (name: string, jabatan: string) => {
   return addDoc(collection(db, "participants"), { name, jabatan, createdAt: serverTimestamp() });
 };
@@ -395,6 +441,15 @@ export const subscribeToCategories = (callback: (data: any[]) => void) => {
     },
     () => callback([])
   );
+};
+
+/** Baca kategori rapat sekali saja — untuk form yang tidak butuh real-time */
+export const getCategories = async (): Promise<any[]> => {
+  try {
+    const snap = await getDocs(collection(db, "meetingCategories"));
+    const data = snap.docs.map(d => ({ id: d.id, ...d.data(), createdAt: d.data().createdAt?.toDate() || new Date() })) as any[];
+    return data.sort((a, b) => (a.name as string).localeCompare(b.name as string));
+  } catch { return []; }
 };
 
 export const addCategory = async (name: string, description: string, participants: any[]) => {

@@ -4,13 +4,16 @@ import { LogOut, User as UserIcon } from 'lucide-react';
 
 interface HeaderProps {
   user?: {
+    uid?: string | null;
+    email?: string | null;
     photoURL?: string | null;
     displayName?: string | null;
   } | null;
   onLogout?: () => void;
+  onOpenProfile?: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ user, onLogout }) => {
+const Header: React.FC<HeaderProps> = ({ user, onLogout, onOpenProfile }) => {
   return (
     <header className="sticky top-0 z-50 w-full bg-white border-b border-slate-200">
       <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
@@ -22,19 +25,28 @@ const Header: React.FC<HeaderProps> = ({ user, onLogout }) => {
         <div className="flex items-center gap-4">
           {user && (
             <>
-              <div className="hidden sm:flex flex-col items-end gap-0.5">
+              <button 
+                onClick={onOpenProfile}
+                className="hidden sm:flex flex-col items-end gap-0.5 hover:opacity-80 transition-opacity text-right"
+              >
                 <span className="text-xs font-bold text-slate-900 leading-none">{user.displayName}</span>
-                <span className="text-[10px] font-bold text-slate-400 leading-none">ADMINISTRATOR</span>
-              </div>
+                <span className="text-[10px] font-bold text-[#A62731] leading-none flex items-center gap-1">
+                  ADMINISTRATOR
+                </span>
+              </button>
               
               <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-full border border-slate-200 overflow-hidden bg-slate-50 flex items-center justify-center">
+                <button 
+                  onClick={onOpenProfile}
+                  className="w-9 h-9 rounded-full border border-slate-200 overflow-hidden bg-slate-50 flex items-center justify-center hover:ring-2 ring-[#A62731] ring-offset-2 transition-all cursor-pointer relative"
+                  title="Buka Profil & Tanda Tangan"
+                >
                   {user.photoURL ? (
                     <img src={user.photoURL} alt="User" className="w-full h-full object-cover" />
                   ) : (
                     <UserIcon className="w-4 h-4 text-slate-400" />
                   )}
-                </div>
+                </button>
                 
                 <button 
                   onClick={onLogout}

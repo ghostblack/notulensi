@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Trash2, Loader2, UserPlus, Mail, Key, User, Eye, EyeOff, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { subscribeToUsers, createPetugasAccount, deletePetugasAccount } from '@/services/firebase';
+import SignaturePad from '../SignaturePad';
 
 interface PetugasAccount {
   id: string;
@@ -21,6 +22,9 @@ const AdminAccountManager: React.FC = () => {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [signaturePreview, setSignaturePreview] = useState<string | null>(null);
+  const [useDrawMode, setUseDrawMode] = useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const unsub = subscribeToUsers((data) => {
@@ -43,9 +47,10 @@ const AdminAccountManager: React.FC = () => {
     setSuccess(null);
 
     try {
-      await createPetugasAccount(formData.email.trim(), formData.password, formData.displayName.trim());
+      await createPetugasAccount(formData.email.trim(), formData.password, formData.displayName.trim(), signaturePreview);
       setSuccess(`Akun "${formData.displayName}" berhasil dibuat.`);
       setFormData({ displayName: '', email: '', password: '' });
+      setSignaturePreview(null);
       setShowForm(false);
     } catch (err: any) {
       const code = err.code;
@@ -59,6 +64,54 @@ const AdminAccountManager: React.FC = () => {
     } finally {
       setCreating(false);
     }
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.includes('png')) {
+      setError('Format TTD harus PNG transparan.');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setError('Ukuran file maksimal 2MB.');
+      return;
+    }
+    setError(null);
+    try {
+      const base64 = await compressImageToBase64DataUri(file);
+      setSignaturePreview(base64);
+    } catch {
+      setError('Gagal memproses gambar TTD.');
+    }
+  };
+
+  const compressImageToBase64DataUri = async (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const objectUrl = URL.createObjectURL(file);
+      img.src = objectUrl;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        if (width > 400) {
+          height = Math.round((height * 400) / width);
+          width = 400;
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject(new Error("Canvas error"));
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/png', 0.9));
+        URL.revokeObjectURL(objectUrl);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        reject();
+      };
+    });
   };
 
   const handleDelete = async (uid: string, name: string) => {
@@ -83,7 +136,7 @@ const AdminAccountManager: React.FC = () => {
           <p className="text-xs text-slate-500 mt-0.5">Buat dan kelola akun untuk petugas notulensi.</p>
         </div>
         <button
-          onClick={() => { setShowForm(true); setError(null); setSuccess(null); }}
+          onClick={() => { setShowForm(true); setError(null); setSuccess(null); setSignaturePreview(null); }}
           className="flex items-center gap-2 px-4 py-2.5 bg-[#431317] text-white rounded-xl text-xs font-bold hover:bg-[#5a1a1f] transition-all active:scale-95 shadow-none"
         >
           <UserPlus className="w-3.5 h-3.5" />
@@ -167,7 +220,68 @@ const AdminAccountManager: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex gap-2 pt-1">
+            {/* Signature Upload / Draw */}
+            <div className="space-y-1.5 pt-2">
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Tanda Tangan Digital (Opsional)</label>
+                <div className="flex items-center gap-1.5 bg-slate-50 p-0.5 rounded-lg border border-slate-200">
+                  <button 
+                    type="button"
+                    onClick={() => { setUseDrawMode(false); setSignaturePreview(null); }}
+                    className={`px-3 py-1 text-[10px] font-bold rounded-md transition-colors ${!useDrawMode ? 'bg-white shadow-sm text-slate-800' : 'text-slate-400 hover:text-slate-600'}`}
+                  >
+                    Upload
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => { setUseDrawMode(true); setSignaturePreview(null); }}
+                    className={`px-3 py-1 text-[10px] font-bold rounded-md transition-colors ${useDrawMode ? 'bg-white shadow-sm text-slate-800' : 'text-slate-400 hover:text-slate-600'}`}
+                  >
+                    Gambar Langsung
+                  </button>
+                </div>
+              </div>
+              
+              <div className="mt-2">
+                {useDrawMode ? (
+                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                    <SignaturePad onSave={(base64) => setSignaturePreview(base64)} />
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-4">
+                    {signaturePreview ? (
+                      <div className="relative group w-32 h-20 border border-slate-200 rounded-xl bg-slate-50 flex items-center justify-center overflow-hidden">
+                        <img src={signaturePreview} alt="Preview" className="max-h-full max-w-full object-contain" />
+                        <button 
+                          type="button" 
+                          onClick={() => setSignaturePreview(null)}
+                          className="absolute inset-0 bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-xs font-medium"
+                        >
+                          Hapus
+                        </button>
+                      </div>
+                    ) : (
+                      <button 
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="h-20 w-full sm:w-64 border-2 border-dashed border-slate-200 rounded-xl flex flex-col items-center justify-center text-slate-400 hover:text-slate-600 hover:border-slate-300 transition-colors bg-slate-50"
+                      >
+                        <span className="text-xs font-bold mb-1">Upload PNG Transparan</span>
+                      </button>
+                    )}
+                    <input 
+                      ref={fileInputRef}
+                      type="file" 
+                      accept="image/png" 
+                      className="hidden" 
+                      onChange={handleFileChange}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-1 border-t border-slate-100 mt-2">
               <button
                 type="button"
                 onClick={() => { setShowForm(false); setError(null); }}

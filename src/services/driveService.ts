@@ -43,3 +43,30 @@ export const saveMeetingToDrive = async (
     };
   }
 };
+
+/** Upload foto dokumentasi ke Drive — returns array of Drive file IDs */
+export const uploadPhotosToDrive = async (
+  photos: PhotoUploadData[],
+  meetingTitle: string,
+  date: string,
+  subBagian: string
+): Promise<{ success: boolean; photoIds?: string[]; error?: string }> => {
+  try {
+    const response = await fetch('/.netlify/functions/upload-photos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ photos, meetingTitle, date, subBagian }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Gagal upload foto');
+    }
+
+    return data;
+  } catch (error: any) {
+    console.error('Photo Upload Error:', error);
+    return { success: false, error: error.message || 'Terjadi kesalahan saat upload foto.' };
+  }
+};

@@ -203,10 +203,14 @@ export const analyzeDocumentStyle = async (file: File): Promise<string> => {
 };
 
 // === API: Transcribe Full Audio ===
-export const transcribeFullAudio = async (audioFile: File, context: MeetingContext): Promise<string> => {
+export const transcribeFullAudio = async (
+  audioFile: File, 
+  context: MeetingContext, 
+  onProgress?: (progress: number) => void
+): Promise<string> => {
   const mimeType = getAudioMimeType(audioFile);
   const totalSize = audioFile.size;
-  const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB per chunk
+  const CHUNK_SIZE = 15 * 1024 * 1024; // 15MB per chunk — hemat API call vs 4MB sebelumnya
 
   console.log(`[Gemini] Transcribing audio: ${audioFile.name}, MIME: ${mimeType}, Size: ${(totalSize / 1024 / 1024).toFixed(1)}MB`);
 
@@ -287,6 +291,9 @@ export const transcribeFullAudio = async (audioFile: File, context: MeetingConte
     // Ambil 3-4 kalimat terakhir dari hasil ini untuk contekan potongan berikutnya
     const lines = cleanResult.split('\n').filter(l => l.trim().length > 0);
     previousContext = lines.slice(-4).join('\n');
+    
+    // Panggil onProgress kalau dijembatani dari atas
+    onProgress?.(Math.round(((i + 1) / chunks.length) * 100));
   }
 
   return finalTranscript;
@@ -319,6 +326,30 @@ export const transcribeAudioChunk = async (audioBlob: Blob, context: MeetingCont
 
 // === API: Generate Final Minutes ===
 export const generateFinalMinutesFromText = async (fullTranscript: string, context: MeetingContext): Promise<string> => {
+
+  // Urutkan peserta berdasarkan hierarki jabatan standar KPU
+  const sortParticipantsByHierarchy = (participantsStr: string): string => {
+    const items = participantsStr.split(/\n/).map(p => p.trim()).filter(Boolean);
+    const getLevel = (entry: string): number => {
+      const low = entry.toLowerCase();
+      if (/\bketua\b/.test(low) && /kpu/.test(low)) return 0;          // Ketua KPU
+      if (/\banggota\b/.test(low) && /kpu/.test(low)) return 1;        // Anggota KPU
+      if (/sekretaris.*kpu|kpu.*sekretaris/.test(low)) return 2;       // Sekretaris KPU
+      if (/kepala sub bagian|kasubbag/.test(low)) return 3;            // Kepala Sub Bagian
+      if (/notulen|arsiparis|operator|staff|staf/.test(low)) return 5; // Staff/Notulen
+      return 4;
+    };
+    const indexed = items.map((item, i) => ({ item, level: getLevel(item), i }));
+    indexed.sort((a, b) => a.level - b.level || a.i - b.i);
+    return indexed.map(x => x.item).join('\n');
+  };
+
+  const numberedParticipants = sortParticipantsByHierarchy(context.participants)
+    .split('\n')
+    .filter(p => p.trim())
+    .map((p, i) => `${i + 1}. ${p.trim().toUpperCase()}`)
+    .join('\n');
+
   const styleInstruction = context.styleGuide
     ? `GUNAKAN RANGKA TEMPLATE INI (TERMASUK LOGO): \n${context.styleGuide}`
     : `
@@ -336,7 +367,7 @@ export const generateFinalMinutesFromText = async (fullTranscript: string, conte
 
 **PESERTA RAPAT YANG HADIR BERDASARKAN YANG MENANDATANGANI DAFTAR HADIR**
 
-${context.participants.split(/,|\n/).map((p, i) => `${i + 1}. ${p.trim()}`).join('\n')}
+${numberedParticipants}
 
 ---
 
@@ -348,6 +379,7 @@ ${context.participants.split(/,|\n/).map((p, i) => `${i + 1}. ${p.trim()}`).join
 **KESIMPULAN / HASIL RAPAT:**
 * [RINGKASAN POIN-POIN PENTING HASIL RAPAT DI SINI]
 `;
+
 
   const photoPlaceholders = context.documentationPhotos
     ? `\n\n# DOKUMENTASI ${context.title.toUpperCase()} ${context.date.toUpperCase()}\n\n[DOKUMENTASI_FOTO_DI_SINI]`
@@ -368,6 +400,7 @@ ${context.participants.split(/,|\n/).map((p, i) => `${i + 1}. ${p.trim()}`).join
     5. LOGO: Baris pertama HARUS ![Logo KPU](${KPU_LOGO_URL}).
     6. DOKUMENTASI: Letakkan placeholder [DOKUMENTASI_FOTO_DI_SINI] di bagian paling akhir dokumen.
     7. KESIMPULAN: WAJIB menyertakan bagian "KESIMPULAN / HASIL RAPAT" yang berisi poin-poin ringkasan hasil rapat sebelum bagian dokumentasi foto.
+    8. DAFTAR PESERTA: JANGAN UBAH urutan, nomor, nama, maupun jabatan peserta rapat yang sudah diberikan di template. Salin persis apa adanya.
     
     DATA TRANSKRIP UNTUK DIPROSES:
     ${fullTranscript}
