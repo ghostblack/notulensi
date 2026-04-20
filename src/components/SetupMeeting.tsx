@@ -1,5 +1,5 @@
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Calendar, Type, Upload, FileText, ArrowRight, X, AlertCircle, Mic, Music, Users, Component, Tag, Plus, Search, MapPin, Clock } from 'lucide-react';
 import { MeetingContext, InputMode } from '@/types';
 import { getSubBagians, getCategories, getParticipants } from '@/services/firebase';
@@ -46,6 +46,8 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
 
   const audioFileInputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const triggerBtnRef = useRef<HTMLButtonElement>(null);
+  const [dropdownRect, setDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
 
   // Load Firestore data — pakai getDocs (baca sekali) bukan onSnapshot (real-time)
   // karena data sub-bagian/kategori/peserta tidak berubah saat user ngisi form
@@ -69,15 +71,32 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
     loadFormData();
   }, []);
 
-  // Close dropdown on outside click
+  // Recalculate fixed dropdown position based on trigger button
+  const recalcDropdownPos = useCallback(() => {
+    if (!triggerBtnRef.current) return;
+    const r = triggerBtnRef.current.getBoundingClientRect();
+    setDropdownRect({ top: r.bottom + 4, left: r.left, width: r.width });
+  }, []);
+
+  // Close dropdown on outside click or when page scrolls/resizes
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      const insideTrigger = triggerBtnRef.current?.contains(target);
+      const insideDropdown = dropdownRef.current?.contains(target);
+      if (!insideTrigger && !insideDropdown) {
         setShowParticipantDropdown(false);
       }
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    const handleScrollResize = () => setShowParticipantDropdown(false);
+    document.addEventListener('mousedown', handleClick);
+    window.addEventListener('scroll', handleScrollResize, true);
+    window.addEventListener('resize', handleScrollResize);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      window.removeEventListener('scroll', handleScrollResize, true);
+      window.removeEventListener('resize', handleScrollResize);
+    };
   }, []);
 
   // When category changes, auto-populate participants
@@ -331,40 +350,61 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
                 )}
 
                 <div className="flex gap-2">
-                  <div className="relative flex-1" ref={dropdownRef}>
+                  <div className="relative flex-1">
                     <button
+                      ref={triggerBtnRef}
                       type="button"
-                      onClick={() => setShowParticipantDropdown(p => !p)}
+                      onClick={() => {
+                        const next = !showParticipantDropdown;
+                        if (next) recalcDropdownPos();
+                        setShowParticipantDropdown(next);
+                      }}
                       className="w-full h-10 flex items-center gap-2 px-3 bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-500 hover:border-[#431317]/30 hover:text-[#431317] transition-all"
                     >
                       <Users className="w-3.5 h-3.5" />
                       Daftar
                     </button>
-                    {showParticipantDropdown && (
-                      <div className="absolute top-full mt-1 left-0 right-0 z-50 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden animate-in slide-in-from-top-2 duration-150">
+
+                    {/* Dropdown fixed — tidak terpotong oleh overflow scroll container */}
+                    {showParticipantDropdown && dropdownRect && (
+                      <div
+                        ref={dropdownRef}
+                        style={{
+                          position: 'fixed',
+                          top: dropdownRect.top,
+                          left: dropdownRect.left,
+                          width: Math.max(dropdownRect.width, 220),
+                          zIndex: 9999,
+                        }}
+                        className="bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden animate-in slide-in-from-top-2 duration-150"
+                      >
                         <div className="p-2 border-b border-slate-100">
                           <div className="relative">
                             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-300" />
                             <input
                               type="text"
-                              placeholder="Cari..."
+                              placeholder="Cari peserta..."
                               value={participantSearch}
                               onChange={e => setParticipantSearch(e.target.value)}
-                              className="w-full h-8 pl-8 pr-3 text-xs font-medium bg-slate-50 border border-slate-100 rounded-lg focus:outline-none"
+                              className="w-full h-8 pl-8 pr-3 text-xs font-medium bg-slate-50 border border-slate-100 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#431317]/20"
+                              autoFocus
                             />
                           </div>
                         </div>
-                        <div className="max-h-40 overflow-y-auto">
+                        <div className="max-h-52 overflow-y-auto custom-scrollbar">
                           {filteredGlobalParticipants.length === 0 ? (
-                            <p className="px-3 py-4 text-[10px] text-slate-400 text-center font-medium">Kosong</p>
+                            <p className="px-3 py-5 text-[10px] text-slate-400 text-center font-medium">Tidak ada peserta</p>
                           ) : (
                             filteredGlobalParticipants.map(p => (
                               <button
                                 key={p.id}
                                 type="button"
                                 onClick={() => addFromGlobal(p)}
-                                className="w-full flex items-center gap-3 px-3 py-2 hover:bg-slate-50 text-left"
+                                className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 active:bg-slate-100 text-left transition-colors"
                               >
+                                <div className="w-6 h-6 rounded-lg bg-slate-100 flex items-center justify-center shrink-0">
+                                  <Users className="w-3 h-3 text-slate-400" />
+                                </div>
                                 <div className="min-w-0">
                                   <p className="text-xs font-bold text-slate-900 truncate">{p.name}</p>
                                   <p className="text-[10px] text-slate-400 truncate">{p.jabatan}</p>
