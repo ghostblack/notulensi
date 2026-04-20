@@ -271,7 +271,7 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
 
   // Helper: convert markdown to a clean HTML string for docx export
   // exportPhotoBase64s: base64 data URIs to embed as photos in docx (for local files)
-  const markdownToHtml = async (markdown: string, exportPhotoBase64s: string[] = [], forPdf = false): Promise<string> => {
+  const markdownToHtml = async (markdown: string, exportPhotoBase64s: string[] = [], forPdf = false, sigBase64: string | null = null, sigName: string | null = null): Promise<string> => {
     // Wait for logo to be loaded; if not ready, use external URL as fallback
     const KPU_LOGO_DATA = logoBase64 || KPU_LOGO_URL;
     
@@ -414,12 +414,12 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
               <td style="width:40%; text-align:center; font-family:'Bookman Old Style',Georgia,serif; font-size:11pt; border:none; line-height:1.5;">
                 <p style="margin:0; font-weight:bold;">NOTULIS,</p>
                 
-                ${userSignature 
-                  ? `<img src="${userSignature}" style="max-height: 80px; max-width: 150px; margin: 10px auto; display: block;" alt="TTD Notulis" />` 
+                ${sigBase64 
+                  ? `<img src="${sigBase64}" style="max-height: 80px; max-width: 150px; margin: 10px auto; display: block;" alt="TTD Notulis" />` 
                   : `<br/><br/><br/><br/>`
                 }
                 
-                <p style="margin:0; font-weight:bold;">${userDisplayName ? userDisplayName.toUpperCase() : 'NOTULIS Rapat'}</p>
+                <p style="margin:0; font-weight:bold;">${sigName ? sigName.toUpperCase() : 'NOTULIS Rapat'}</p>
               </td>
             </tr>
           </table>
@@ -511,7 +511,7 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
 
       const title = meetingTitle?.replace(/\s+/g, '_') || 'Notulen';
       // Pass the already-computed base64 photo data URIs so images embed correctly
-      const htmlContent = await markdownToHtml(currentContent, photoBase64s);
+      const htmlContent = await markdownToHtml(currentContent, photoBase64s, false, userSignature, userDisplayName);
 
       const blob = await asBlob(htmlContent, {
         orientation: 'portrait',
@@ -550,7 +550,7 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
       const title = meetingTitle || (content.match(/^#\s+(.+)$/m)?.[1]) || 'Rapat Tanpa Judul';
       
       // Buat HTML bersih dari markdown
-      const htmlContent = await markdownToHtml(currentContent, photoBase64s);
+      const htmlContent = await markdownToHtml(currentContent, photoBase64s, false, userSignature, userDisplayName);
 
       // Convert HTML → PDF blob
       // windowWidth: 643px = usable content area A4 dengan margin 20mm tiap sisi
@@ -591,7 +591,7 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
 
   const handleDownloadPdf = async () => {
     const currentContent = editableContent || content;
-    const htmlContent = await markdownToHtml(currentContent, photoBase64s);
+    const htmlContent = await markdownToHtml(currentContent, photoBase64s, false, userSignature, userDisplayName);
     const printWindow = window.open('', '_blank');
     if (!printWindow) {
       alert('Popup diblokir browser! Izinkan popup untuk situs ini agar bisa mengunduh PDF.');
@@ -878,7 +878,7 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
                       li: ({node, ...props}) => <li className="mb-1" {...props} />
                   }}
                >
-                  {content}
+                  {editableContent}
                </ReactMarkdown>
             </div>
           )}
