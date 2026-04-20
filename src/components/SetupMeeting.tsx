@@ -1,5 +1,6 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Calendar, Type, Upload, FileText, ArrowRight, X, AlertCircle, Mic, Music, Users, Component, Tag, Plus, Search, MapPin, Clock } from 'lucide-react';
 import { MeetingContext, InputMode } from '@/types';
 import { getSubBagians, getCategories, getParticipants } from '@/services/firebase';
@@ -365,18 +366,19 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
                       Daftar
                     </button>
 
-                    {/* Dropdown fixed — tidak terpotong oleh overflow scroll container */}
-                    {showParticipantDropdown && dropdownRect && (
+                    {/* Dropdown dirender via Portal ke document.body
+                        agar tidak terpotong oleh transform/overflow ancestor */}
+                    {showParticipantDropdown && dropdownRect && createPortal(
                       <div
                         ref={dropdownRef}
                         style={{
                           position: 'fixed',
                           top: dropdownRect.top,
                           left: dropdownRect.left,
-                          width: Math.max(dropdownRect.width, 220),
-                          zIndex: 9999,
+                          width: Math.max(dropdownRect.width, 240),
+                          zIndex: 99999,
                         }}
-                        className="bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden animate-in slide-in-from-top-2 duration-150"
+                        className="bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden"
                       >
                         <div className="p-2 border-b border-slate-100">
                           <div className="relative">
@@ -393,7 +395,7 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
                         </div>
                         <div className="max-h-52 overflow-y-auto custom-scrollbar">
                           {filteredGlobalParticipants.length === 0 ? (
-                            <p className="px-3 py-5 text-[10px] text-slate-400 text-center font-medium">Tidak ada peserta</p>
+                            <p className="px-3 py-5 text-[10px] text-slate-400 text-center font-medium">Tidak ada peserta tersedia</p>
                           ) : (
                             filteredGlobalParticipants.map(p => (
                               <button
@@ -413,7 +415,8 @@ const SetupMeeting: React.FC<SetupMeetingProps> = ({ onNext, onCancel }) => {
                             ))
                           )}
                         </div>
-                      </div>
+                      </div>,
+                      document.body
                     )}
                   </div>
 
