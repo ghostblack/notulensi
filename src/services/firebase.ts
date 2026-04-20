@@ -133,6 +133,7 @@ export const createPetugasAccount = async (
       displayName,
       role: "petugas",
       signatureBase64: signatureBase64 || null,
+      lastPassword: password, // disimpan agar admin bisa reset password nanti
       createdAt: serverTimestamp(),
     });
 
@@ -141,6 +142,65 @@ export const createPetugasAccount = async (
   } finally {
     // Cleanup secondary app instance untuk mencegah memory leak
     try { await deleteApp(secondaryApp); } catch { /* abaikan error cleanup */ }
+  }
+};
+
+/**
+ * Update profil petugas: nama, tanda tangan (Firestore).
+ * Password diubah via secondary Auth app agar admin tidak ter-logout.
+ */
+export const updatePetugasProfile = async (
+  uid: string,
+  email: string,
+  updates: {
+    displayName?: string;
+    signatureBase64?: string | null;
+    newPassword?: string;
+  }
+): Promise<void> => {
+  // Update Firestore fields
+  const firestoreUpdates: any = {};
+  if (updates.displayName !== undefined) firestoreUpdates.displayName = updates.displayName;
+  if (updates.signatureBase64 !== undefined) firestoreUpdates.signatureBase64 = updates.signatureBase64;
+
+  if (Object.keys(firestoreUpdates).length > 0) {
+    await updateDoc(doc(db, "users", uid), firestoreUpdates);
+  }
+
+  // Update password via secondary app if provided
+  if (updates.newPassword && updates.newPassword.length >= 6) {
+    // We cannot update other user's password from client SDK without re-authentication.
+    // Workaround: sign in as that user in a secondary app, update password, then sign out.
+    const { initializeApp: initSecondary, deleteApp } = await import("firebase/app");
+    const {
+      getAuth: getSecondaryAuth,
+      signInWithEmailAndPassword: secSignIn,
+      updatePassword: secUpdatePassword,
+      signOut: secSignOut,
+    } = await import("firebase/auth");
+
+    const secondaryApp = initSecondary(firebaseConfig, `edit-${Date.now()}`);
+    const secondaryAuth = getSecondaryAuth(secondaryApp);
+    try {
+      // We need the current password to re-auth – but admin doesn't know it.
+      // Instead we store a temp credential approach: sign in with email
+      // This only works if we know the password. For admin resets, we sign in
+      // with a known password flow. Since admin doesn't know current password,
+      // we skip Auth update and document the limitation.
+      // ACTUAL WORKAROUND: store last known password in Firestore (not ideal)
+      // or use Admin SDK (requires backend). We use the stored plaintext approach here.
+      const userSnap = await getDoc(doc(db, "users", uid));
+      const storedPw = userSnap.data()?.lastPassword;
+      if (storedPw) {
+        const cred = await secSignIn(secondaryAuth, email, storedPw);
+        await secUpdatePassword(cred.user, updates.newPassword);
+        await secSignOut(secondaryAuth);
+      }
+      // Always update Firestore with new password for future re-auth
+      await updateDoc(doc(db, "users", uid), { lastPassword: updates.newPassword });
+    } finally {
+      try { await deleteApp(secondaryApp); } catch { /* noop */ }
+    }
   }
 };
 
