@@ -52,7 +52,7 @@ export const handler = async (event: any) => {
         let text = "";
 
         if (action === "generateContent") {
-          const modelName = payload.model || "gemini-2.5-flash";
+          const modelName = payload.model || "gemini-3-flash-preview";
           console.log(`[Proxy] Memanggil model: ${modelName}`);
 
           const result = await genAI.models.generateContent({

@@ -37,6 +37,17 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
   const [driveError, setDriveError] = useState<string | null>(null);
 
   React.useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isEditing) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isEditing]);
+
+  React.useEffect(() => {
     let finalContent = content;
     // Paksa pastikan ada placeholder supaya blok TTD dan Foto selalu dirender
     // meskipun untuk riwayat notulensi lama yang tadinya belum memiliki placeholder ini.
@@ -611,7 +622,18 @@ const MinutesDisplay: React.FC<MinutesDisplayProps> = ({ content, documentationP
       {/* Action Toolbar */}
       <div className={`bg-white rounded-xl border border-slate-200 shadow-none p-3 mb-6 flex items-center justify-between gap-2 sm:gap-4 transition-all print:hidden ${isFullWidth ? 'max-w-5xl mx-auto sticky top-0 z-10' : ''}`}>
         <div className="flex items-center gap-2 sm:gap-3">
-          <button onClick={onReset} className="p-2 text-slate-400 hover:text-[#431317] rounded-lg hover:bg-slate-50 transition-colors">
+          <button 
+            onClick={() => {
+              if (isEditing) {
+                if (window.confirm("Perubahan belum disimpan. Yakin ingin keluar?")) {
+                  onReset();
+                }
+              } else {
+                onReset();
+              }
+            }} 
+            className="p-2 text-slate-400 hover:text-[#431317] rounded-lg hover:bg-slate-50 transition-colors"
+          >
             <ArrowLeft className="w-5 h-5 sm:w-4 sm:h-4" />
           </button>
           <div className="flex items-center gap-2 text-slate-900 font-bold text-xs sm:text-sm">

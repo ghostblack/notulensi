@@ -43,7 +43,14 @@ const App: React.FC = () => {
   const processingQueue = useRef<Promise<void>>(Promise.resolve());
   const activeTasksCount = useRef(0);
 
-  const isRecordingInProgress = status === AppStatus.RECORDING || status === AppStatus.PROCESSING_CHUNK;
+  const hasUnsavedWork = [
+    AppStatus.READY,
+    AppStatus.RECORDING,
+    AppStatus.PROCESSING_CHUNK,
+    AppStatus.PROCESSING_FINAL,
+    AppStatus.PROCESSING_EXTERNAL,
+    AppStatus.PHOTO_UPLOAD
+  ].includes(status);
 
   const isSessionActive = [
     AppStatus.SETUP,
@@ -57,7 +64,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (isRecordingInProgress) {
+      if (hasUnsavedWork) {
         e.preventDefault();
         e.returnValue = '';
       }
@@ -65,7 +72,7 @@ const App: React.FC = () => {
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [isRecordingInProgress]);
+  }, [hasUnsavedWork]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
@@ -120,7 +127,7 @@ const App: React.FC = () => {
   };
 
   const handleTabChange = (tabId: string) => {
-    if (isRecordingInProgress && tabId !== activeTab) {
+    if (hasUnsavedWork && tabId !== activeTab) {
       setPendingAction({ type: 'tab', value: tabId });
       setIsConfirmModalOpen(true);
       return;
@@ -177,6 +184,8 @@ const App: React.FC = () => {
         transcript = await transcribeFullAudio(data.audioFile, data, (progress) => {
           // Progress chunks dari 0% ke 100% dipetakan ke 15% ke 60% dalam skala FinalizationProgress
           setFinalizationProgress(15 + Math.round(progress * 0.45));
+        }, (statusMsg) => {
+          setProcessStatus(statusMsg);
         });
       }
 
@@ -227,7 +236,16 @@ const App: React.FC = () => {
     
     const task = async () => {
       try {
-        const text = await transcribeAudioChunk(blob, meetingContext, accumulatedTranscripts.current.length);
+        // Kirim 20 baris terakhir sebagai rolling context agar model tahu siapa yang sedang bicara
+        const allLines = accumulatedTranscripts.current
+          .join('\n')
+          .split('\n')
+          .filter(l => l.trim().length > 0);
+        const previousContext = allLines.length > 0
+          ? allLines.slice(-20).join('\n')
+          : undefined;
+
+        const text = await transcribeAudioChunk(blob, meetingContext, accumulatedTranscripts.current.length, previousContext);
         if (text) {
           accumulatedTranscripts.current.push(text);
           if (meetingContext.meetingId) await saveTranscriptChunk(meetingContext.meetingId, text);
@@ -338,7 +356,7 @@ const App: React.FC = () => {
   };
 
   const handleReset = () => {
-    if (isRecordingInProgress) {
+    if (hasUnsavedWork) {
       setPendingAction({ type: 'reset' });
       setIsConfirmModalOpen(true);
       return;
@@ -639,9 +657,9 @@ const App: React.FC = () => {
         isOpen={isConfirmModalOpen}
         onClose={() => { setIsConfirmModalOpen(false); setPendingAction(null); }}
         onConfirm={handleConfirmAction}
-        title="Batalkan Rekaman?"
-        message="Rekaman sedang berlangsung. Jika Anda keluar sekarang, data rekaman saat ini tidak akan disimpan."
-        confirmText="YA, BATALKAN"
+        title="Batalkan Proses?"
+        message="Rekaman atau pemrosesan sedang berlangsung. Jika Anda keluar sekarang, data saat ini akan hilang."
+        confirmText="YA, KELUAR"
         variant="danger"
       />
 

@@ -10,6 +10,12 @@
 [functions."gemini-proxy"]
   timeout = 60
 
+[functions."gemini-upload"]
+  timeout = 120
+
+[functions."gemini-transcribe"]
+  timeout = 300
+
 
 [dev]
   framework = "vite"

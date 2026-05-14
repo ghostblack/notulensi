@@ -4,16 +4,15 @@ import { fileToBase64 } from '@/utils/fileHelpers';
 import { MeetingContext } from '@/types';
 
 // === CONFIG ===
-const IS_DEV = import.meta.env.DEV;
-const PROXY_URL = "/.netlify/functions/gemini-proxy";
 const KPU_LOGO_URL = "https://ik.imagekit.io/gambarid/file%20kpu/KPU_Logo.svg.png?updatedAt=1768041033309";
 
-// Model fallback chain (USER PREFERENCE):
-// gemini-3-flash-preview punya limit 1.500 RPD jadi diprioritaskan.
+// Model fallback chain — prioritas dari paling capable ke paling stabil
 const MODEL_CHAIN = [
-  "gemini-3-flash-preview",        // Prioritas Utama (Super Kuota 1.500/hari)
-  "gemini-2.0-flash",              // Cadangan 1 (Kuota 1.500/hari)
-  "gemini-2.5-flash",              // Cadangan Darurat Tertinggi (Cuma 20/hari)
+  "gemini-3-flash-preview",         // Prioritas utama — Flash 3 terbaru
+  "gemini-2.5-flash-preview-05-20", // Cadangan 1
+  "gemini-2.5-flash",               // Cadangan 2
+  "gemini-2.0-flash",               // Cadangan 3
+  "gemini-1.5-flash",               // Cadangan 4 — paling stabil
 ];
 
 const API_KEYS = [
@@ -21,134 +20,138 @@ const API_KEYS = [
   import.meta.env.VITE_GEMINI_API_KEY_2,
   import.meta.env.VITE_GEMINI_API_KEY_3,
   import.meta.env.VITE_GEMINI_API_KEY_4,
-  import.meta.env.VITE_GEMINI_API_KEY_5
-].filter(Boolean);
+  import.meta.env.VITE_GEMINI_API_KEY_5,
+].filter(Boolean) as string[];
 
-// State global untuk caching posisi Model dan Key yang masih hidup (hidupkan efisiensi!)
-let activeModelIndex = 0;
-let activeKeyIndex = 0;
-
-// Helper function untuk mengambil instance GenAI sesuai key yang aktif saat ini
-const getActiveGenAI = () => {
-  const key = API_KEYS[activeKeyIndex % API_KEYS.length];
-  return new GoogleGenAI({ apiKey: key });
-};
-
-// Pindah ke Key berikutnya secara berurutan
-const nextApiKey = () => {
-  activeKeyIndex = (activeKeyIndex + 1) % API_KEYS.length;
-  console.log(`[Gemini] Menggeser ke API Key antrean: ${activeKeyIndex + 1}/${API_KEYS.length}...`);
-};
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 // Rate limiting state
 let lastRequestTime = 0;
-const MIN_DELAY_MS = 2000;
+const MIN_DELAY_MS = 1500;
 
 const waitIfNeeded = async () => {
   const now = Date.now();
-  const timeSinceLast = now - lastRequestTime;
-  if (timeSinceLast < MIN_DELAY_MS) {
-    const delay = MIN_DELAY_MS - timeSinceLast;
-    await new Promise(resolve => setTimeout(resolve, delay));
-  }
+  const diff = now - lastRequestTime;
+  if (diff < MIN_DELAY_MS) await sleep(MIN_DELAY_MS - diff);
   lastRequestTime = Date.now();
 };
 
-// Single attempt to call a specific model
-const tryModel = async (modelName: string, contents: any): Promise<string> => {
-  // Ambil API yang diyakini masih hidup di index ini
-  const genAI = getActiveGenAI();
-  console.log(`[Gemini] Memanggil model: ${modelName} dg API Key ke-${(activeKeyIndex % API_KEYS.length) + 1}`);
+// === CORE: callGemini ===
+// Strategi: Loop setiap API Key. Tiap key dicoba hingga 3 kali (retry).
+// Jika gagal 3x pada key yang sama → pindah ke key berikutnya.
+// Error token limit / model error → langsung ganti model, tidak retry.
+// parts: array of Part objects ({ text } atau { inlineData: { mimeType, data } })
+export const callGemini = async (parts: any[], systemInstruction?: string): Promise<string> => {
+  const formattedContents = [{ role: 'user', parts }];
 
-  const response = await genAI.models.generateContent({
-    model: modelName,
-    contents,
-  });
+  // Debug ukuran audio jika ada
+  const audioParts = parts.filter((p: any) => p.inlineData);
+  if (audioParts.length > 0) {
+    audioParts.forEach((p: any, idx: number) => {
+      const sizeKB = Math.round((p.inlineData.data?.length || 0) * 0.75 / 1024);
+      console.log(`[Gemini] 🎵 Audio part ${idx + 1}: mimeType=${p.inlineData.mimeType}, size≈${sizeKB}KB`);
+    });
+  }
 
-  if (response.text) return response.text;
-  if (response.candidates && response.candidates.length > 0) {
-    const candidate = response.candidates[0];
-    if (candidate.content && candidate.content.parts) {
-      return candidate.content.parts.filter((p: any) => p.text && !p.thought).map((p: any) => p.text).join("");
+  const allErrors: string[] = [];
+
+  // Loop setiap model — model menjadi outer loop
+  for (let mi = 0; mi < MODEL_CHAIN.length; mi++) {
+    const modelName = MODEL_CHAIN[mi];
+
+    // Loop setiap API key — tiap key dicoba 3x sebelum pindah
+    for (let ki = 0; ki < API_KEYS.length; ki++) {
+      const apiKey = API_KEYS[ki];
+      const keyLabel = `Key-${ki + 1}`;
+
+      let attempt = 0;
+      const MAX_RETRIES_PER_KEY = 3;
+
+      while (attempt < MAX_RETRIES_PER_KEY) {
+        attempt++;
+        try {
+          await waitIfNeeded();
+
+          const genAI = new GoogleGenAI({ apiKey });
+          console.log(`[Gemini] 🔄 ${modelName} | ${keyLabel} | attempt ${attempt}/${MAX_RETRIES_PER_KEY}`);
+
+          const requestPayload: any = {
+            model: modelName,
+            contents: formattedContents,
+          };
+          if (systemInstruction) {
+            requestPayload.config = { systemInstruction };
+          }
+
+          const response = await genAI.models.generateContent(requestPayload);
+
+          let text = '';
+          if (response.text) {
+            text = response.text;
+          } else if (response.candidates?.[0]?.content?.parts) {
+            text = response.candidates[0].content.parts
+              .filter((p: any) => p.text && !p.thought)
+              .map((p: any) => p.text)
+              .join('');
+          }
+
+          if (!text) throw new Error(`Respons kosong (finishReason: ${response.candidates?.[0]?.finishReason})`);
+
+          console.log(`[Gemini] ✅ Berhasil! ${text.length} karakter.`);
+          return text;
+
+        } catch (err: any) {
+          const errMsg = err?.message || '';
+          const is503 = errMsg.includes('503') || errMsg.includes('overloaded') || errMsg.includes('UNAVAILABLE') || errMsg.includes('unavailable');
+          const is429 = errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('exhausted') || errMsg.includes('Too Many Requests');
+          const isTokenLimit = errMsg.includes('max tokens') || errMsg.includes('token limit') || errMsg.includes('MAX_TOKENS') || errMsg.includes('generation exceeded');
+
+          console.warn(`[Gemini] ❌ ${modelName} | ${keyLabel} | attempt ${attempt}: ${errMsg.substring(0, 100)}`);
+          allErrors.push(`${modelName}[${keyLabel}][attempt ${attempt}]: ${errMsg}`);
+
+          if (isTokenLimit) {
+            // Token limit = masalah MODEL, bukan key — langsung ganti model, jangan buang key lain
+            console.log(`[Gemini] ⚠️ Token limit terlampaui di ${modelName}. Ganti model berikutnya...`);
+            // Break semua loop key untuk model ini, pindah ke model berikutnya
+            ki = API_KEYS.length; // exit key loop
+            break; // exit while loop
+          }
+
+          if (is429) {
+            // Quota habis di key ini untuk model ini — pindah ke key berikutnya langsung
+            console.log(`[Gemini] ⚠️ Quota habis ${modelName} | ${keyLabel}. Pindah key...`);
+            await sleep(1000);
+            break; // keluar while, lanjut ki++ (key berikutnya)
+          }
+
+          if (is503) {
+            if (attempt < MAX_RETRIES_PER_KEY) {
+              // Server sibuk — tunggu dan retry key yang sama
+              console.log(`[Gemini] ⏳ Server sibuk (503). Retry ${attempt}/${MAX_RETRIES_PER_KEY} tunggu 5 detik...`);
+              await sleep(5000);
+              continue; // retry attempt yang sama
+            } else {
+              // Sudah 3x coba, server masih mati — ganti key
+              console.log(`[Gemini] 🔄 ${modelName} | ${keyLabel} sudah 3x gagal 503. Ganti key...`);
+              break;
+            }
+          }
+
+          // Error lain (bad request, dll) — retry key yang sama sampai habis
+          if (attempt < MAX_RETRIES_PER_KEY) {
+            console.log(`[Gemini] ↩️ Error umum. Retry ${attempt}/${MAX_RETRIES_PER_KEY}...`);
+            await sleep(2000);
+            continue;
+          }
+          // Habis attempt — ganti key
+          console.log(`[Gemini] 🔁 ${keyLabel} habis ${MAX_RETRIES_PER_KEY} attempt. Pindah key...`);
+          break;
+        }
+      }
     }
   }
 
-  throw new Error("Model mengembalikan respons kosong.");
-};
-
-// === CORE: Smart generate with model fallback chain ===
-export const callGemini = async (contents: any): Promise<string> => {
-  const errors: string[] = [];
-
-  // Pastikan contents diformat ke standard Array (Mencegah error 'Respons kosong' atau SDK reject)
-  const formattedContents = Array.isArray(contents) ? contents : [contents];
-
-  // Kita kasih kesempatan maksimum sebanyak N-Keys * M-Models percobaan
-  const maxAttempts = API_KEYS.length * MODEL_CHAIN.length * 3; // Dikali 3 untuk kompensasi retry High Demand
-  let totalAttempts = 0;
-  let current503Retries = 0; // Tracking khusus kegagalan High Demand (503)
-
-  while (totalAttempts < maxAttempts) {
-    const modelName = MODEL_CHAIN[activeModelIndex % MODEL_CHAIN.length];
-    
-    try {
-      await waitIfNeeded(); // Rate limit inter-request gap
-      
-      const result = await tryModel(modelName, formattedContents);
-      current503Retries = 0; // Reset tracking kalau tembus sukses
-      return result; // Sukses! Index ter-cache, siap untuk chunk selanjutnya.
-      
-    } catch (error: any) {
-      const errMsg = error.message || "";
-      const is503 = errMsg.includes("503") || errMsg.includes("unavailable") || errMsg.includes("overloaded");
-      const is429 = errMsg.includes("429") || errMsg.includes("quota") || errMsg.includes("exhausted") || errMsg.includes("Too Many Requests");
-
-      console.warn(`[Gemini] ❌ ${modelName} dg Key-${(activeKeyIndex % API_KEYS.length)+1} gagal: ${errMsg.substring(0, 80)}...`);
-      errors.push(`${modelName}[Key-${(activeKeyIndex % API_KEYS.length)+1}]: ${errMsg}`);
-      totalAttempts++;
-
-      if (is503) {
-        if (current503Retries < 3) {
-          current503Retries++;
-          console.log(`[Gemini] ⏳ Server High Demand (503). Percobaan ulang ke-${current503Retries}/3 tunggu 5 detik...`);
-          await new Promise(resolve => setTimeout(resolve, 5000)); // Nunggu server reda
-          continue; // Tetap stay di Model dan Key yang sama
-        } else {
-          console.log(`[Gemini] 🔄 Server model benar-benar mati (sudah dicoba 3x). Mengubah ke Model/Key Cadangan...`);
-          current503Retries = 0;
-          activeModelIndex = (activeModelIndex + 1) % MODEL_CHAIN.length;
-          nextApiKey(); // Servernya ngaco, mending pindah server (key) sekalian
-          continue;
-        }
-      }
-
-      current503Retries = 0; // Kalo lolos dari 503 tapi kena error lain, reset meternya
-
-      if (is429) {
-        console.log(`[Gemini] ⚠️ Quota harian habis untuk Model ini di Key ini! Turun kasta ke Model Cadangan dulu...`);
-        // USER REQUEST: Kalau limit habis, kita ganti MODEL-nya dulu, jangan ganti KEY-nya karena Key masih punya kuota untuk model lain!
-        
-        // Kita lompat ke model cadangan. Jika index kembali memutar ke 0 (habis semua model untuk key ini), barulah ganti Key!
-        const previousModelIndex = activeModelIndex;
-        activeModelIndex = (activeModelIndex + 1) % MODEL_CHAIN.length;
-        
-        if (activeModelIndex <= previousModelIndex) {
-          // Artinya kita udah muterin semua model untuk Key ini tapi gagal semua. Barulah ganti Key!
-          console.log(`[Gemini] 🔁 Semua model habis limit di Key ini. Mengubah API Key...`);
-          nextApiKey(); 
-          await new Promise(resolve => setTimeout(resolve, 1500));
-        }
-        continue;
-      }
-      
-      // Jika error aneh (Misal bad request), ganti model & key sekalian biar fresh
-      activeModelIndex = (activeModelIndex + 1) % MODEL_CHAIN.length;
-      nextApiKey();
-    }
-  }
-
-  // Jika kode sampai sini, artinya SELURUH Key dan SELURUH Model Cadangan benar-benar kehabisan peluru.
-  throw new Error(`Semua Model AI dan Backup API Key Gagal Total. Tunggu besok atau gunakan key baru.\n${errors.join('\n')}`);
+  throw new Error(`Semua Model AI dan API Key Gagal.\n${allErrors.slice(-10).join('\n')}`);
 };
 
 // === Helper: deteksi MIME type dari file secara robust ===
@@ -178,165 +181,364 @@ const getAudioMimeType = (file: File | Blob): string => {
 export const analyzeDocumentStyle = async (file: File): Promise<string> => {
   try {
     const fileBase64 = await fileToBase64(file);
-    const mimeType = file.type || (file.name.endsWith('.docx') ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'application/pdf');
+    const mimeType = file.type || (file.name.endsWith('.docx')
+      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      : 'application/pdf');
 
-    return await callGemini({
-      parts: [
-        { inlineData: { mimeType: mimeType, data: fileBase64 } },
-        {
-          text: `
-            TUGAS: Buatlah "REPLIKA VISUAL MARKDOWN" dari dokumen ini untuk digunakan sebagai template.
-            
-            KEWAJIBAN MUTLAK:
-            1. LOGO: Anda WAJIB menyertakan baris ini di baris paling atas: ![Logo KPU](${KPU_LOGO_URL})
-            2. HEADER & FOOTER: Salin persis teks header (Lembaga, Alamat, dsb) secara verbatim.
-            3. STRUKTUR KONTEN: Analisis bagaimana isi notulensi disusun (misal: penomoran, gaya paragraf, atau poin-poin). Gunakan placeholder [ISI NOTULENSI DI SINI] yang diletakkan di dalam struktur yang sesuai.
-            4. GAYA BAHASA: Tiru gaya bahasa birokrasi KPU yang ada di dokumen.
-            5. TANPA TABEL: DILARANG menggunakan tabel markdown. Gunakan paragraf naratif.
-          `
-        }
-      ]
-    });
+    return await callGemini([
+      { inlineData: { mimeType, data: fileBase64 } },
+      { text: 'Analisis dokumen ini.' }
+    ], `TUGAS: Buatlah "REPLIKA VISUAL MARKDOWN" dari dokumen yang diberikan untuk digunakan sebagai template.
+    
+    KEWAJIBAN MUTLAK:
+    1. LOGO: Anda WAJIB menyertakan baris ini di baris paling atas: ![Logo KPU](${KPU_LOGO_URL})
+    2. HEADER & FOOTER: Salin persis teks header (Lembaga, Alamat, dsb) secara verbatim.
+    3. STRUKTUR KONTEN: Analisis bagaimana isi notulensi disusun (misal: penomoran, gaya paragraf, atau poin-poin). Gunakan placeholder [ISI NOTULENSI DI SINI] yang diletakkan di dalam struktur yang sesuai.
+    4. GAYA BAHASA: Tiru gaya bahasa birokrasi KPU yang ada di dokumen.
+    5. TANPA TABEL: DILARANG menggunakan tabel markdown. Gunakan paragraf naratif.`);
   } catch (error: any) {
     throw new Error(error.message || "Gagal membaca file referensi.");
   }
 };
 
-// === API: Transcribe Full Audio ===
-export const transcribeFullAudio = async (
-  audioFile: File, 
-  context: MeetingContext, 
-  onProgress?: (progress: number) => void
+// System instruction standar untuk transkripsi audio
+const buildTranscriptionSystemInstruction = (participants: string) =>
+  `TUGAS SISTEM UTAMA: Anda adalah asisten transkripsi profesional KPU. Transkripsikan file audio yang diberikan secara VERBATIM dan SANGAT AKURAT.
+
+DAFTAR PEMBICARA RESMI DALAM RAPAT INI:
+${participants}
+
+INSTRUKSI MUTLAK (SPEAKER DIARIZATION):
+1. DENGARKAN DENGAN SEKSAMA perbedaan setiap suara (pria/wanita, aksen, intonasi, kecepatan bicara).
+2. Setiap kali ada pergantian pembicara, WAJIB buat baris baru dengan format PERSIS:
+   [Nama Pembicara]: [Apa yang diucapkan...]
+3. COCOKKAN suara pembicara dengan "Daftar Pembicara Resmi" di atas. Gunakan logika konteks percakapan.
+4. Jika 100% yakin suara milik siapa, sebutkan NAMA LENGKAPNYA sesuai daftar.
+5. Jika ada suara yang tidak bisa diidentifikasi, beri label "Peserta Lain 1", "Peserta Lain 2", dst. secara konsisten.
+6. JANGAN meringkas. Tuliskan setiap perkataan secara SANGAT DETAIL dan LENGKAP.
+7. PEMISAHAN KETAT: JANGAN PERNAH menggabungkan ucapan dari dua orang berbeda dalam satu baris/paragraf.
+8. TANPA BASA-BASI: LANGSUNG mulai dengan format [Nama]: tanpa intro apapun.
+9. ATURAN ANTI-HALUSINASI MUTLAK: HANYA tuliskan apa yang benar-benar terdengar dalam audio. DILARANG KERAS mengarang, menyimpulkan, atau menambahkan kata/kalimat di luar rekaman suara asli.`;
+
+// === Helper: Upload audio langsung dari browser ke Gemini Files API ===
+// Menggunakan XHR agar upload.onprogress bisa dipakai — progress bytes nyata.
+// Retry 3x per API key sebelum pindah ke key berikutnya.
+const uploadAudioDirect = async (
+  audioFile: File | Blob,
+  mimeType: string,
+  onProgress?: (pct: number) => void,  // 0-100 progress upload saja
+  onStatus?: (msg: string) => void
 ): Promise<string> => {
-  const mimeType = getAudioMimeType(audioFile);
-  const totalSize = audioFile.size;
-  const CHUNK_SIZE = 15 * 1024 * 1024; // 15MB per chunk — hemat API call vs 4MB sebelumnya
+  const sizeMB = (audioFile.size / 1024 / 1024).toFixed(1);
+  console.log(`[Gemini] 📤 Upload ke Files API... (${sizeMB}MB, ${mimeType})`);
 
-  console.log(`[Gemini] Transcribing audio: ${audioFile.name}, MIME: ${mimeType}, Size: ${(totalSize / 1024 / 1024).toFixed(1)}MB`);
+  // Upload via XHR supaya progress bytes bisa dilaporkan
+  const uploadViaXHR = (apiKey: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const boundary = '----GeminiUpload' + Date.now();
+      const metaJson = JSON.stringify({ file: { display_name: (audioFile as File).name || 'audio' } });
+      const metaPart = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metaJson}\r\n`;
+      const filePart = `--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n`;
+      const tail = `\r\n--${boundary}--`;
 
-  // Jika file kecil (<4MB), proses utuh secara langsung (paling rapi)
-  if (totalSize <= CHUNK_SIZE) {
-    const audioBase64 = await fileToBase64(audioFile);
-    return await callGemini({
-      parts: [
-        { inlineData: { mimeType, data: audioBase64 } },
-        {
-          text: `
-            TUGAS SISTEM UTAMA: Anda adalah asisten transkripsi profesional KPU. Transkripsikan file audio ini secara verbatim dan sangat akurat.
-            
-            DAFTAR PEMBICARA RESMI DALAM RAPAT INI:
-            ${context.participants}
-            
-            INSTRUKSI SANGAT PENTING (SPEAKER DIARIZATION):
-            1. DENGARKAN DENGAN SEKSAMA perbedaan setiap suara (pria/wanita, aksen, intonasi).
-            2. Setiap kali ada pergantian pembicara, WAJIB buat baris baru dengan format:
-               [Nama Pembicara]: [Apa yang diucapkan...]
-            3. COCOKKAN suara pembicara aktif tersebut dengan "Daftar Pembicara Resmi" di atas. Gunakan logika bahasa dan konteks.
-            4. Jika kamu yakin 100% suara itu milik siapa, sebutkan NAMA LENGKAPNYA sesuai daftar.
-            5. Jika ada suara yang tidak bisa ditebak, beri label "Peserta Lain 1", "Peserta Lain 2", dst.
-            6. JANGAN meringkas, tangkap setiap detil percakapan.
-          `
+      const reader = new FileReader();
+      reader.onload = () => {
+        const metaBytes  = new TextEncoder().encode(metaPart);
+        const fileBytes  = new TextEncoder().encode(filePart);
+        const fileBuffer = reader.result as ArrayBuffer;
+        const tailBytes  = new TextEncoder().encode(tail);
+
+        const body = new Uint8Array(
+          metaBytes.byteLength + fileBytes.byteLength + fileBuffer.byteLength + tailBytes.byteLength
+        );
+        let off = 0;
+        body.set(metaBytes, off);  off += metaBytes.byteLength;
+        body.set(fileBytes, off);  off += fileBytes.byteLength;
+        body.set(new Uint8Array(fileBuffer), off); off += fileBuffer.byteLength;
+        body.set(tailBytes, off);
+
+        const xhr = new XMLHttpRequest();
+
+        // ✅ Progress upload bytes nyata
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 100);
+            onProgress?.(pct);
+            onStatus?.(`Mengunggah audio... ${pct}% (${(e.loaded / 1024 / 1024).toFixed(1)} / ${sizeMB} MB)`);
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const resp = JSON.parse(xhr.responseText);
+              const uri = resp?.file?.uri || resp?.uri;
+              if (uri) resolve(uri);
+              else reject(new Error('URI tidak ditemukan dalam respons upload.'));
+            } catch {
+              reject(new Error('Respons upload tidak valid.'));
+            }
+          } else {
+            reject(new Error(`Upload gagal: HTTP ${xhr.status} — ${xhr.responseText.substring(0, 120)}`))
+          }
+        };
+        xhr.onerror = () => reject(new Error('Network error saat upload.'));
+        xhr.open('POST', `https://generativelanguage.googleapis.com/upload/v1beta/files?uploadType=multipart&key=${apiKey}`);
+        xhr.setRequestHeader('Content-Type', `multipart/related; boundary=${boundary}`);
+        xhr.send(body);
+      };
+      reader.onerror = () => reject(new Error('Gagal membaca file audio.'));
+      reader.readAsArrayBuffer(audioFile);
+    });
+
+  const allErrors: string[] = [];
+
+  for (let ki = 0; ki < API_KEYS.length; ki++) {
+    const keyLabel = `Key-${ki + 1}`;
+    let attempt = 0;
+    while (attempt < 3) {
+      attempt++;
+      try {
+        console.log(`[Gemini] Upload ${keyLabel} attempt ${attempt}/3...`);
+        onStatus?.(`Mengunggah audio (${sizeMB}MB)... [${keyLabel}]`);
+        const uri = await uploadViaXHR(API_KEYS[ki]);
+        console.log(`[Gemini] ✅ Upload berhasil! URI: ${uri}`);
+        return uri;
+      } catch (err: any) {
+        const errMsg = err?.message || '';
+        allErrors.push(`${keyLabel}[attempt ${attempt}]: ${errMsg}`);
+        console.warn(`[Gemini] ❌ Upload ${keyLabel} attempt ${attempt}: ${errMsg.substring(0, 80)}`);
+        if (attempt < 3) {
+          onStatus?.(`Upload gagal, mencoba ulang... (${attempt}/3)`);
+          await sleep(3000);
         }
-      ]
-    });
+      }
+    }
   }
 
-  // Jika file besar, potong dan proses SEOKUENSIAL agar bisa lempar konteks sebelumnya
-  // Ini menghindari error 429 dan menjaga transkrip tetap sangat "RAPI" dan bersambung.
-  console.log(`[Gemini] File besar. Memotong dan memproses berurutan agar rapi...`);
-  const chunks: Blob[] = [];
-  let offset = 0;
-  while (offset < totalSize) {
-    chunks.push(audioFile.slice(offset, offset + CHUNK_SIZE, mimeType));
-    offset += CHUNK_SIZE;
-  }
-
-  let finalTranscript = "";
-  let previousContext = "";
-
-  for (let i = 0; i < chunks.length; i++) {
-    console.log(`[Gemini] Memproses potongan ${i + 1}/${chunks.length}...`);
-    const chunkBase64 = await fileToBase64(chunks[i]);
-    
-    // Kirim transkrip sebelumnya agar AI tahu siapa yang sedang bicara jika terpotong di tengah!
-    const promptText = `
-      TUGAS: Transkripsikan potongan audio rapat KPU ini (potongan ke-${i + 1} dari ${chunks.length}).
-      
-      DAFTAR PEMBICARA RESMI:
-      ${context.participants}
-      
-      ${previousContext ? `KONTEKS SEBELUMNYA (KALIMAT TERAKHIR DARI POTONGAN SEBELUMNYA):
-      "${previousContext}"
-      
-      INSTRUKSI KHUSUS SAMBUNGAN:
-      Lanjutkan kalimat yang terpotong dari konteks di atas dengan nama pembicara yang tepat. Lanjutkan silsilah pembicara.` : ""}
-      
-      INSTRUKSI:
-      1. Tulis verbatim. Buat baris baru bila ganti orang dengan format: [Nama Pembicara]: [Ucapan]
-      2. Jangan menambahkan pembukaan basa-basi (seperti "Berikut adalah transkripsinya"). LANGSUNG ke percakapan!
-    `;
-
-    const chunkResult = await callGemini({
-      parts: [
-        { inlineData: { mimeType, data: chunkBase64 } },
-        { text: promptText }
-      ]
-    });
-
-    // Buang teks basa-basi dari Gemini kalau ada (biar rapi waktu disambung)
-    const cleanResult = chunkResult.replace(/^(Berikut|Ini)( adalah)? (transkrip|potongan).*/im, "").trim();
-
-    finalTranscript += (finalTranscript ? "\n\n" : "") + cleanResult;
-    
-    // Ambil 3-4 kalimat terakhir dari hasil ini untuk contekan potongan berikutnya
-    const lines = cleanResult.split('\n').filter(l => l.trim().length > 0);
-    previousContext = lines.slice(-4).join('\n');
-    
-    // Panggil onProgress kalau dijembatani dari atas
-    onProgress?.(Math.round(((i + 1) / chunks.length) * 100));
-  }
-
-  return finalTranscript;
+  throw new Error(`Semua API key gagal upload.\n${allErrors.join('\n')}`);
 };
 
-// === API: Transcribe Audio Chunk ===
-export const transcribeAudioChunk = async (audioBlob: Blob, context: MeetingContext, index: number): Promise<string> => {
-  const audioBase64 = await fileToBase64(audioBlob);
-  const mimeType = getAudioMimeType(audioBlob);
+// === Helper: Transcribe via fileUri (setelah Files API upload) ===
+// Retry 3x per key sebelum ganti key, ganti model jika token limit.
+// Timer status tiap 5 detik agar user tahu AI masih bekerja.
+const transcribeViaFileUri = async (
+  fileUri: string,
+  mimeType: string,
+  systemInstruction: string,
+  promptText: string,
+  onStatus?: (msg: string) => void
+): Promise<string> => {
+  const allErrors: string[] = [];
 
-  return await callGemini({
-    parts: [
-      { inlineData: { mimeType, data: audioBase64 } },
-      {
-        text: `
-          TUGAS: Transkripsikan audio segmen berjalan (chunk ${index}).
-          
-          DAFTAR PEMBICARA RESMI:
-          ${context.participants}
-          
-          INSTRUKSI:
-          1. Gunakan daftar pembicara di atas untuk melabeli suara. Gunakan format "Nama Pembicara: Ucapan".
-          2. Jika potongan ini memotong kalimat di tengah, tuliskan kata sebisa mungkin, abaikan konteks kalimat yang tidak utuh karena akan disambung dengan chunk sebelumnya.
-          3. Jangan sampai ada yang diringkas. Tulis verbatim.
-        `
+  // Timer untuk update status saat AI sedang proses (bisa 1-3 menit)
+  let statusTimer: ReturnType<typeof setInterval> | null = null;
+  const startStatusTimer = (modelName: string) => {
+    let elapsed = 0;
+    if (statusTimer) clearInterval(statusTimer);
+    statusTimer = setInterval(() => {
+      elapsed += 5;
+      const msgs = [
+        `AI sedang membaca audio... (${elapsed}d)`,
+        `Mentranskripsi percakapan... (${elapsed}d)`,
+        `Mengidentifikasi pembicara... (${elapsed}d)`,
+        `Memproses rekaman dengan ${modelName}... (${elapsed}d)`,
+      ];
+      onStatus?.(msgs[Math.floor(elapsed / 5) % msgs.length]);
+    }, 5000);
+  };
+  const stopStatusTimer = () => {
+    if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+  };
+
+  try {
+    for (let mi = 0; mi < MODEL_CHAIN.length; mi++) {
+      const modelName = MODEL_CHAIN[mi];
+
+      for (let ki = 0; ki < API_KEYS.length; ki++) {
+        const keyLabel = `Key-${ki + 1}`;
+        let attempt = 0;
+
+        while (attempt < 3) {
+          attempt++;
+          try {
+            await waitIfNeeded();
+            const genAI = new GoogleGenAI({ apiKey: API_KEYS[ki] });
+            console.log(`[Gemini] 🎙️ Transcribe via URI | ${modelName} | ${keyLabel} | attempt ${attempt}/3`);
+            onStatus?.(`AI sedang mentranskripsi audio... [${modelName}]`);
+            startStatusTimer(modelName);
+
+            const requestPayload: any = {
+              model: modelName,
+              contents: [{
+                role: 'user',
+                parts: [
+                  { fileData: { mimeType, fileUri } },
+                  { text: promptText },
+                ],
+              }],
+            };
+            if (systemInstruction) requestPayload.config = { systemInstruction };
+
+            const result = await genAI.models.generateContent(requestPayload);
+            stopStatusTimer();
+
+            let text = '';
+            if (result.text) {
+              text = result.text;
+            } else if (result.candidates?.[0]?.content?.parts) {
+              text = result.candidates[0].content.parts
+                .filter((p: any) => p.text && !p.thought)
+                .map((p: any) => p.text)
+                .join('');
+            }
+            if (!text) throw new Error(`Respons kosong (${result.candidates?.[0]?.finishReason})`);
+
+            console.log(`[Gemini] ✅ Transkripsi berhasil! ${text.length} karakter.`);
+            onStatus?.('✅ Transkripsi selesai!');
+            return text;
+
+          } catch (err: any) {
+            stopStatusTimer();
+            const errMsg = err?.message || '';
+            const is503 = errMsg.includes('503') || errMsg.includes('overloaded') || errMsg.includes('UNAVAILABLE');
+            const is429 = errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('exhausted');
+            const isTokenLimit = errMsg.includes('max tokens') || errMsg.includes('token limit') || errMsg.includes('generation exceeded');
+
+            allErrors.push(`${modelName}[${keyLabel}][attempt ${attempt}]: ${errMsg}`);
+            console.warn(`[Gemini] ❌ ${modelName} | ${keyLabel} | attempt ${attempt}: ${errMsg.substring(0, 100)}`);
+
+            if (isTokenLimit) {
+              onStatus?.(`⚠️ Output terlalu panjang di ${modelName}, coba model lain...`);
+              console.log(`[Gemini] ⚠️ Token limit di ${modelName}. Ganti model...`);
+              ki = API_KEYS.length; // skip sisa key untuk model ini
+              break;
+            }
+            if (is429) {
+              onStatus?.(`⚠️ Quota habis ${keyLabel}, pindah key...`);
+              console.log(`[Gemini] ⚠️ Quota habis ${keyLabel}. Pindah key...`);
+              await sleep(1000);
+              break;
+            }
+            if (is503 && attempt < 3) {
+              onStatus?.(`⏳ Server sibuk, mencoba ulang (${attempt}/3)...`);
+              console.log(`[Gemini] ⏳ 503 Server sibuk. Retry ${attempt}/3 tunggu 5 detik...`);
+              await sleep(5000);
+              continue;
+            }
+            if (attempt < 3) {
+              onStatus?.(`↩️ Mencoba ulang... (${attempt}/3)`);
+              await sleep(2000);
+              continue;
+            }
+            break;
+          }
+        }
       }
-    ]
-  });
+    }
+  } finally {
+    stopStatusTimer();
+  }
+
+  throw new Error(`Semua model dan key gagal transkripsi.\n${allErrors.slice(-8).join('\n')}`);
+};
+
+// === API: Transcribe Full Audio ===
+// File besar (>20MB): upload ke Files API dari browser → transcribe via URI (sama seperti AI Studio).
+// File kecil (≤20MB): kirim inline base64 langsung.
+export const transcribeFullAudio = async (
+  audioFile: File,
+  context: MeetingContext,
+  onProgress?: (progress: number) => void,
+  onStatus?: (message: string) => void
+): Promise<string> => {
+  const mimeType = getAudioMimeType(audioFile);
+  const sizeMB = (audioFile.size / 1024 / 1024).toFixed(1);
+  const isLarge = audioFile.size > 20 * 1024 * 1024; // >20MB pakai Files API
+
+  console.log(`[Gemini] Transcribing: ${audioFile.name}, ${sizeMB}MB, ${mimeType}, mode=${isLarge ? 'Files API' : 'inline'}`);
+  onProgress?.(5);
+
+  const systemInstruction = buildTranscriptionSystemInstruction(context.participants);
+  const promptText = `Transkripsikan seluruh rekaman rapat ini secara verbatim, kata demi kata.`;
+
+  if (isLarge) {
+    // Upload dengan progress bytes nyata (XHR)
+    // onProgress: 5% → 10-50% saat upload → 50% saat transkripsi → 100%
+    const fileUri = await uploadAudioDirect(
+      audioFile,
+      mimeType,
+      (uploadPct) => {
+        // Upload menempati progress 10%-50%
+        onProgress?.(10 + Math.round(uploadPct * 0.4));
+      },
+      onStatus
+    );
+
+    onProgress?.(50);
+    onStatus?.('Upload selesai! AI sedang mentranskripsi audio...');
+
+    const transcript = await transcribeViaFileUri(fileUri, mimeType, systemInstruction, promptText, onStatus);
+    onProgress?.(100);
+    return transcript;
+  } else {
+    // File kecil: inline base64 langsung
+    onStatus?.(`Memproses audio (${sizeMB}MB)...`);
+    onProgress?.(20);
+    const audioBase64 = await fileToBase64(audioFile);
+    onProgress?.(50);
+    onStatus?.('AI sedang mentranskripsi audio...');
+    const transcript = await callGemini([
+      { inlineData: { mimeType, data: audioBase64 } },
+      { text: promptText }
+    ], systemInstruction);
+    onProgress?.(100);
+    return transcript;
+  }
+};
+
+// === API: Transcribe Audio Chunk (dari live recording) ===
+// Chunk dikirim inline base64 langsung — tidak perlu upload Files API.
+export const transcribeAudioChunk = async (
+  audioBlob: Blob,
+  context: MeetingContext,
+  index: number,
+  previousContext?: string
+): Promise<string> => {
+  const mimeType = getAudioMimeType(audioBlob);
+  const systemInstruction = buildTranscriptionSystemInstruction(context.participants);
+
+  const audioBase64 = await fileToBase64(audioBlob);
+
+  const promptText = index === 0
+    ? `Transkripsikan segmen rekaman pertama ini secara verbatim, kata demi kata.`
+    : `LANJUTAN rekaman (segmen ke-${index + 1}).
+
+${previousContext ? `KONTEKS TRANSKRIP SEBELUMNYA (20 baris terakhir):
+--- MULAI KONTEKS ---
+${previousContext}
+--- AKHIR KONTEKS ---
+
+` : ''}Lanjutkan transkrip dari audio ini. Pertahankan konsistensi nama pembicara.`;
+
+  return await callGemini([
+    { inlineData: { mimeType, data: audioBase64 } },
+    { text: promptText }
+  ], systemInstruction);
 };
 
 // === API: Generate Final Minutes ===
 export const generateFinalMinutesFromText = async (fullTranscript: string, context: MeetingContext): Promise<string> => {
 
-  // Urutkan peserta berdasarkan hierarki jabatan standar KPU
   const sortParticipantsByHierarchy = (participantsStr: string): string => {
     const items = participantsStr.split(/\n/).map(p => p.trim()).filter(Boolean);
     const getLevel = (entry: string): number => {
       const low = entry.toLowerCase();
-      if (/\bketua\b/.test(low) && /kpu/.test(low)) return 0;          // Ketua KPU
-      if (/\banggota\b/.test(low) && /kpu/.test(low)) return 1;        // Anggota KPU
-      if (/sekretaris.*kpu|kpu.*sekretaris/.test(low)) return 2;       // Sekretaris KPU
-      if (/kepala sub bagian|kasubbag/.test(low)) return 3;            // Kepala Sub Bagian
-      if (/notulen|arsiparis|operator|staff|staf/.test(low)) return 5; // Staff/Notulen
+      if (/\bketua\b/.test(low) && /kpu/.test(low)) return 0;
+      if (/\banggota\b/.test(low) && /kpu/.test(low)) return 1;
+      if (/sekretaris.*kpu|kpu.*sekretaris/.test(low)) return 2;
+      if (/kepala sub bagian|kasubbag/.test(low)) return 3;
+      if (/notulen|arsiparis|operator|staff|staf/.test(low)) return 5;
       return 4;
     };
     const indexed = items.map((item, i) => ({ item, level: getLevel(item), i }));
@@ -380,37 +582,57 @@ ${numberedParticipants}
 * [RINGKASAN POIN-POIN PENTING HASIL RAPAT DI SINI]
 `;
 
-
   const photoPlaceholders = context.documentationPhotos
     ? `\n\n# DOKUMENTASI ${context.title.toUpperCase()} ${context.date.toUpperCase()}\n\n[DOKUMENTASI_FOTO_DI_SINI]`
     : '';
 
-  const prompt = `
-    TUGAS UTAMA: Susun Notulensi Rapat KPU yang SANGAT DETAIL, KRONOLOGIS, dan BERBASIS ALUR PERCAKAPAN.
-    
-    KONTEKS:
-    Judul: ${context.title} | Tanggal: ${context.date}
-    Daftar Pembicara Resmi: ${context.participants}
-    
-    ATURAN FORMAT MUTLAK (WAJIB DIPATUHI):
-    1. DILARANG KERAS MENGGUNAKAN TAG HTML APAPUN (seperti <p>, <div>, <br>, <img>, <b>, <i>, dll). Gunakan MURNI MARKDOWN.
-    2. JANGAN PERNAH MENULISKAN TAG SEPERTI <P ALIGN="CENTER">. Gunakan simbol # untuk judul agar otomatis terpusat oleh sistem.
-    3. GAYA PENULISAN: Gunakan format "**[NAMA]**, menyampaikan:" atau "**[NAMA]**, menanggapi:".
-    4. STRUKTUR: Ikuti struktur dokumen dasar yang diberikan di bawah.
-    5. LOGO: Baris pertama HARUS ![Logo KPU](${KPU_LOGO_URL}).
-    6. DOKUMENTASI: Letakkan placeholder [DOKUMENTASI_FOTO_DI_SINI] di bagian paling akhir dokumen.
-    7. KESIMPULAN: WAJIB menyertakan bagian "KESIMPULAN / HASIL RAPAT" yang berisi poin-poin ringkasan hasil rapat sebelum bagian dokumentasi foto.
-    8. DAFTAR PESERTA: JANGAN UBAH urutan, nomor, nama, maupun jabatan peserta rapat yang sudah diberikan di template. Salin persis apa adanya.
-    
-    DATA TRANSKRIP UNTUK DIPROSES:
-    ${fullTranscript}
-    
-    STRUKTUR DOKUMEN DASAR:
-    ${styleInstruction}
-    ${photoPlaceholders}
-  `;
+  const systemInstruction = `TUGAS UTAMA: Susun Notulensi Rapat KPU yang SANGAT DETAIL, KRONOLOGIS, dan BERBASIS ALUR PERCAKAPAN dari transkrip yang diberikan.
 
-  return await callGemini({
-    parts: [{ text: prompt }]
-  });
+ATURAN FORMAT MUTLAK — WAJIB DIPATUHI:
+1. MURNI MARKDOWN saja. DILARANG KERAS tag HTML apapun (<p>, <div>, <br>, <b>, <i>, dll).
+2. Gunakan # untuk heading, bukan tag HTML.
+3. LOGO: Baris PERTAMA dokumen HARUS: ![Logo KPU](${KPU_LOGO_URL})
+4. DAFTAR PESERTA: Salin PERSIS dari template — jangan ubah urutan, nomor, nama, atau jabatan.
+5. KESIMPULAN: Wajib ada bagian "KESIMPULAN / HASIL RAPAT" berisi poin-poin ringkasan.
+6. DOKUMENTASI: Placeholder [DOKUMENTASI_FOTO_DI_SINI] di baris paling akhir.
+
+FORMAT PENULISAN ISI RAPAT — INI YANG PALING PENTING:
+Setiap pembicara WAJIB ditulis dalam paragraf tersendiri dengan pola berikut:
+
+  **[NAMA LENGKAP]**, menyampaikan bahwa [isi pernyataan lengkap dan detail].
+
+  **[NAMA LAIN]**, menanggapi dengan menyampaikan bahwa [isi tanggapan lengkap].
+
+  **[NAMA PERTAMA]**, menambahkan bahwa [isi tambahan].
+
+CONTOH YANG BENAR:
+  **Budi Santoso**, menyampaikan bahwa agenda rapat hari ini adalah membahas persiapan pemilu serentak yang akan dilaksanakan pada bulan November. Beliau menjelaskan bahwa terdapat beberapa hal yang perlu mendapat perhatian serius dari seluruh peserta.
+
+  **Sri Wahyuni**, menanggapi dengan menyampaikan bahwa pihaknya sudah menyiapkan daftar logistik yang diperlukan. Namun demikian, masih terdapat kekurangan pada beberapa item yang membutuhkan pengadaan tambahan.
+
+  **Budi Santoso**, menambahkan bahwa pengadaan tambahan harus diselesaikan paling lambat dua minggu sebelum hari pemungutan suara.
+
+ATURAN TAMBAHAN:
+- JANGAN pernah gabungkan ucapan dua orang berbeda dalam satu paragraf.
+- JANGAN meringkas — tulis LENGKAP apa yang disampaikan setiap orang.
+- Gunakan kata penghubung yang sesuai: "menyampaikan", "menanggapi", "menambahkan", "menjelaskan", "menegaskan", "mengusulkan", "menyetujui", dll.
+- Ikuti URUTAN KRONOLOGIS percakapan sesuai transkrip.
+
+STRUKTUR DOKUMEN:
+${styleInstruction}
+${photoPlaceholders}`;
+
+  const prompt = `DATA UNTUK DIPROSES:
+
+Judul Rapat: ${context.title}
+Tanggal: ${context.date}
+Daftar Pembicara Resmi: 
+${context.participants}
+
+=== TRANSKRIP ===
+${fullTranscript}`;
+
+  return await callGemini([
+    { text: prompt }
+  ], systemInstruction);
 };
